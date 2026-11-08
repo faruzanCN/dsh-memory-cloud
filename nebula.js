@@ -92,9 +92,9 @@
   // A wider crest plus a longer wake reads as flowing liquid rather than a
   // single bright bead; the gradient is sampled finely enough that the peak
   // moves sub-stop instead of snapping from sample to sample.
-  const WAKE_DECAY = 0.15
+  const WAKE_DECAY = 0.18
   const WAKE_CUTOFF = 0.34
-  const CREST_WIDTH = 0.075
+  const CREST_WIDTH = 0.085
   const CRESTS = [0, 0.5]
 
   /**
@@ -385,7 +385,6 @@
     selected: null,
     w: 0, h: 0, dpr: 1,
     time: 0,
-    frameCapMs: 0,   // 0 = render at the display rate; adaptive fallback only
     quality: 1,      // 1 = full crest sampling; 0.5 under sustained load
     isMobile: false,
     // Two-finger pinch state, kept separate from the single-finger drag.
@@ -719,24 +718,34 @@
   // Skin: nebula (default) — irregular gas clouds joined by electric arcs
   // -------------------------------------------------------------------------
 
-  /** Screen-space jagged arc between two projected points. */
-  function arcPoints(pa, pb, seed, jitter, segments) {
-    const rand = rng(seed)
+  /**
+   * Screen-space arc between two projected points.
+   *
+   * The offset from the chord must be a SMOOTH function of t. The earlier
+   * version added an independent random kick per segment, which produced a
+   * saw-tooth polyline; a brightness band spanning a couple of those segments
+   * changed direction abruptly as it advanced, so the light looked like pixels
+   * hopping along the wire instead of fluid travelling through it. Two gentle
+   * harmonics (one bow plus one slow S-curve) keep every point at parameter t
+   * projecting onto the chord at exactly t, so the travelling gradient stays
+   * aligned with the drawn line.
+   */
+  function arcPoints(pa, pb, seed, segments) {
     const dx = pb.x - pa.x, dy = pb.y - pa.y
     const len = Math.hypot(dx, dy) || 1
     const nx = -dy / len, ny = dx / len
+    const rand = rng(seed)
+    const sign = rand() < 0.5 ? -1 : 1
+    const bowAmp = Math.min(26, len * 0.09) * sign
+    const sAmp = Math.min(9, len * 0.03) * (rand() < 0.5 ? -1 : 1)
+    const sPhase = rand() * Math.PI * 2
     const pts = [{ x: pa.x, y: pa.y }]
     for (let i = 1; i < segments; i += 1) {
       const t = i / segments
-      // A bow plus a saw-tooth lateral kick: an electric discharge is not a
-      // smooth curve, it kinks sharply from side to side.
-      const bow = Math.sin(t * Math.PI) * Math.min(22, len * 0.07)
-      const kick = (rand() - 0.5) * jitter * (0.4 + Math.sin(t * Math.PI))
-      const along = (rand() - 0.5) * jitter * 0.3
-      pts.push({
-        x: pa.x + dx * t + nx * (bow + kick) + (dx / len) * along,
-        y: pa.y + dy * t + ny * (bow + kick) + (dy / len) * along,
-      })
+      // Envelope pins both ends to the clusters, so links always meet their gas.
+      const env = Math.sin(t * Math.PI)
+      const off = env * (bowAmp + sAmp * Math.sin(t * Math.PI * 2 + sPhase))
+      pts.push({ x: pa.x + dx * t + nx * off, y: pa.y + dy * t + ny * off })
     }
     pts.push({ x: pb.x, y: pb.y })
     return pts
@@ -771,8 +780,10 @@
       const color = r.kind === 'fork' ? [255, 213, 145]
         : r.kind === 'workspace' ? [125, 224, 192] : [140, 180, 255]
       const seed = hash(r.source + r.target)
-      const segments = 16
-      const pts = arcPoints(pa, pb, seed, 7 + r.weight * 6, segments)
+      // 48 samples: the arc reads as a continuous curve rather than a chain of
+      // visible segments once a lit band crosses it.
+      const segments = 48
+      const pts = arcPoints(pa, pb, seed, segments)
 
       // On a phone, 29 arcs in a narrow viewport easily drown the gas, so keep
       // only the stronger links clearly visible there.
@@ -782,7 +793,7 @@
 
       // Between currents the wire is black — no permanent channel glow.
       if (!active) return
-      drawSignalWave(t => polylinePoint(pts, t), color, gain, signalPhase(seed), 56, 1)
+      drawSignalWave(t => polylinePoint(pts, t), color, gain, signalPhase(seed), segments, 1)
     })
     ctx.restore()
   }
@@ -1142,23 +1153,17 @@
   }
 
   let lastFrame = 0
-  let slowStreak = 0
+  const frameGaps = []
   function render() {
     // Render at the display's own rate: a fixed 30 fps gate made the flowing
-    // current visibly step on a 60/120 Hz screen. The adaptive cap below only
-    // engages when the device genuinely cannot keep up.
+    // current visibly step on a 60/120 Hz screen.
     const now = signalClock()
-    if (state.frameCapMs > 0 && now - lastFrame < state.frameCapMs) {
-      requestAnimationFrame(render)
-      return
-    }
     const dtMs = lastFrame === 0 ? 16 : Math.min(64, now - lastFrame)
     lastFrame = now
     state.time = now
     const dt = dtMs / 1000
     // Frame-rate independent easing: same perceived response at 60 or 120 Hz.
     const ease = 1 - Math.exp(-dt * 7.5)
-    const frameStart = performance.now()
     if (state.autoRotate && !state.dragging) state.targetYaw += 0.096 * dt
     state.yaw += (state.targetYaw - state.yaw) * ease
     state.pitch += (state.targetPitch - state.pitch) * ease
@@ -1271,18 +1276,21 @@
     // back to 30 fps only after a sustained streak of expensive frames (an
     // Android WebView under load). It recovers on its own when frames get
     // cheap again, so a slow start never permanently caps the animation.
-    // Adaptive quality. Dropping the frame rate is exactly what causes the
-    // "stuttering" complaint, so the FIRST response to a slow device is fewer
-    // gradient stops (a little less crest precision), and only a sustained
-    // stall falls back to a 30 fps gate.
-    const cost = performance.now() - frameStart
-    if (cost > 13) slowStreak = Math.min(60, slowStreak + 1)
-    else slowStreak = Math.max(0, slowStreak - 2)
-    if (slowStreak >= 12) state.quality = 0.5
-    if (slowStreak >= 45) state.frameCapMs = 1000 / 30
-    if (slowStreak === 0) {
-      state.quality = 1
-      state.frameCapMs = 0
+    // Adaptive quality ONLY — never the frame rate.
+    //
+    // An earlier version dropped the whole scene to 30 fps when frames got
+    // expensive, then recovered as soon as they got cheap again. That feedback
+    // loop oscillates between 60 and 30 fps, which reads as far worse
+    // stuttering than staying at one rate. Frame pacing is now left to the
+    // browser; the only adaptation is how finely the crest is sampled, decided
+    // from the real frame interval with wide hysteresis so it cannot flap.
+    frameGaps.push(dtMs)
+    if (frameGaps.length > 30) frameGaps.shift()
+    if (frameGaps.length === 30) {
+      const sorted = [...frameGaps].sort((a, b) => a - b)
+      const p50 = sorted[15]
+      if (p50 > 22 && state.quality > 0.5) state.quality = 0.5
+      else if (p50 < 15 && state.quality < 1) state.quality = 1
     }
 
     requestAnimationFrame(render)
