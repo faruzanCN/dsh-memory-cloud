@@ -1,13 +1,18 @@
 {
   "name": "dsh-memory-cloud",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Visualize every DSH session memory as an interactive 3D nebula, with a neuron-signal skin and zoom-driven detail levels.",
   "license": "MIT",
   "author": "faruzanCN",
   "homepage": "https://github.com/faruzanCN/dsh-memory-cloud#readme",
-  "repository": { "type": "git", "url": "git+https://github.com/faruzanCN/dsh-memory-cloud.git" },
-  "bugs": { "url": "https://github.com/faruzanCN/dsh-memory-cloud/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/faruzanCN/dsh-memory-cloud.git"
+  },
+  "bugs": {
+    "url": "https://github.com/faruzanCN/dsh-memory-cloud/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -19,7 +24,9 @@
     "canvas",
     "3d"
   ],
-  "engines": { "node": ">=22.15.0" },
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -43,11 +50,16 @@
     "assets/*"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
     }
   }
 }

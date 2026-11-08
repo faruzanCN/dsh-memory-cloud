@@ -1,5 +1,8 @@
 # dsh-memory-cloud
 
+[![npm version](https://img.shields.io/npm/v/dsh-memory-cloud.svg)](https://www.npmjs.com/package/dsh-memory-cloud)
+[![license](https://img.shields.io/npm/l/dsh-memory-cloud.svg)](./LICENSE)
+
 把当前 DSH（DeepSeek Harness）的**全部会话记忆**聚合成一幅可交互的 **3D 星云图**，并提供「神经元信号」皮肤切换。
 
 DSH 没有独立的记忆库：每一条持久记忆都是 `$DSH_HOME/sessions` 里某个会话日志中的一条已提交事件。本插件冷读所有 `session.v4.jsonl.zstd`（concatenated zstd frames 包裹的 JSONL），把每个会话折叠成一个记忆星云团，再依据 fork 血缘、共同话题、同工作区、共享工具与时间邻近计算会话之间的关联边，最后用纯 Canvas 2D 自实现的 3D 投影渲染。
@@ -27,13 +30,23 @@ DSH 没有独立的记忆库：每一条持久记忆都是 `$DSH_HOME/sessions` 
 
 ## 安装
 
-在 DSH 中安装本地 bundle：
+已发布到 npm：**<https://www.npmjs.com/package/dsh-memory-cloud>**
 
+```bash
+# 方式一：DSH CLI
+dsh plugin --profile web add dsh-memory-cloud
+
+# 方式二：在 DSH 对话里让 agent 安装
+plugin_manager install_bundle dsh-memory-cloud
 ```
+
+也可以在 **Settings → Plugins** 里安装。安装后 bundle 会在当前 profile 全局启用。
+
+本地开发时改成安装目录即可（该方式为软链接，改动即时生效）：
+
+```bash
 plugin_manager install_bundle D:\dsh-memory-cloud
 ```
-
-或在插件管理界面选择该目录安装。安装后 bundle 会在当前 profile 全局启用。
 
 安装成功后，从左侧栏底部的「记忆星云」按钮打开；也可直接访问：
 
@@ -42,6 +55,12 @@ http://127.0.0.1:3080/memory-cloud/
 ```
 
 > 该 URL 无需 DSH Web GUI 的启动 token（插件路由自带 Host 头校验，仅允许 localhost）。
+
+## 卸载
+
+```bash
+dsh plugin --profile web remove dsh-memory-cloud
+```
 
 ## 结构
 
