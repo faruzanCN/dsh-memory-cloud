@@ -86,15 +86,15 @@
   // One shared signal rhythm for BOTH skins: a slow, CONTINUOUS current.
   // Two staggered brightness crests keep charge flowing at every instant —
   // this is not a one-off lightning flash that lights everything then dies.
-  // The current is animated at a fixed 30 fps, independent of the display's
-  // refresh rate. Driving it from a real clock keeps the speed constant even
-  // when rAF fires at 60/120 Hz or stalls for a moment.
-  const SIGNAL_FPS = 30
-  const FRAME_MS = 1000 / SIGNAL_FPS
+  // Phase advances with the real wall clock (continuous, no quantisation), so
+  // the flow is as smooth as the display allows.
   const SIGNAL_CYCLE = 7200
-  const WAKE_DECAY = 0.11   // short wake: the wire really goes dark between crests
-  const WAKE_CUTOFF = 0.30  // hard black beyond this distance behind a crest
-  const CREST_WIDTH = 0.055
+  // A wider crest plus a longer wake reads as flowing liquid rather than a
+  // single bright bead; the gradient is sampled finely enough that the peak
+  // moves sub-stop instead of snapping from sample to sample.
+  const WAKE_DECAY = 0.15
+  const WAKE_CUTOFF = 0.34
+  const CREST_WIDTH = 0.075
   const CRESTS = [0, 0.5]
 
   /**
@@ -102,11 +102,28 @@
    * the wire is PURE BLACK — the old wrap-around made every link faintly lit
    * all the time, which is why the currents never seemed to rest.
    */
+  /**
+   * Brightness at position t from a crest at p. Ahead of the crest (lag < 0)
+   * the wire is PURE BLACK. Behind it the brightness decays as one continuous
+   * curve: a gaussian leading edge that hands over to an exponential wake with
+   * no step at the seam, and a soft window that fades it to zero before the
+   * cutoff. Hard discontinuities here show up as a visible hard line at the end
+   * of every lit band, which reads as stuttering rather than flow.
+   */
+  const EDGE_VALUE = Math.exp(-0.7)
+  const CUT_START = WAKE_CUTOFF * 0.62
   function wakeAt(t, p) {
     const lag = p - t
-    if (lag < 0 || lag > WAKE_CUTOFF) return 0
-    if (lag < CREST_WIDTH) return Math.exp(-((lag / CREST_WIDTH) ** 2) * 0.7)
-    return Math.exp(-(lag - CREST_WIDTH) / WAKE_DECAY) * 0.6
+    if (lag < 0) return 0
+    if (lag >= WAKE_CUTOFF) return 0
+    const base = lag < CREST_WIDTH
+      ? Math.exp(-((lag / CREST_WIDTH) ** 2) * 0.7)
+      : EDGE_VALUE * Math.exp(-(lag - CREST_WIDTH) / WAKE_DECAY)
+    if (lag <= CUT_START) return base
+    // Smoothstep the tail out so the band dissolves instead of being clipped.
+    const u = (lag - CUT_START) / (WAKE_CUTOFF - CUT_START)
+    const fade = 1 - u * u * (3 - 2 * u)
+    return base * fade
   }
 
   /** Total continuous current level at position t for a link's phase. */
@@ -135,7 +152,12 @@
     if (Math.abs(b.x - a.x) + Math.abs(b.y - a.y) < 1) return
 
     // Sample the wave; if the whole link is dark, draw nothing at all.
-    const K = 16
+    // The number of stops follows the on-screen length: a long link rendered
+    // with only 16 stops made the crest jump from stop to stop (the visible
+    // "stuttering"), so sample roughly one stop per ~6 px instead.
+    const screenLen = Math.hypot(b.x - a.x, b.y - a.y)
+    const pxPerStop = state.quality < 1 ? 12 : 6
+    const K = Math.max(12, Math.min(96, Math.round(screenLen / pxPerStop)))
     const levels = []
     let peak = 0
     for (let k = 0; k <= K; k += 1) {
@@ -177,9 +199,13 @@
     return ((state.time / SIGNAL_CYCLE) + (seed % 1000) / 1000) % 1
   }
 
-  /** Real-time clock quantised to exactly SIGNAL_FPS signal frames/second. */
+  /**
+   * Continuous wall clock in milliseconds. An earlier version floored this to
+   * 30 Hz, which made the crest advance in visible steps; the phase must be a
+   * float that changes every animation frame.
+   */
   function signalClock() {
-    return Math.floor((typeof performance !== 'undefined' ? performance.now() : Date.now()) / FRAME_MS) * FRAME_MS
+    return typeof performance !== 'undefined' ? performance.now() : Date.now()
   }
 
   // ---------------------------------------------------------------------------
@@ -359,6 +385,8 @@
     selected: null,
     w: 0, h: 0, dpr: 1,
     time: 0,
+    frameCapMs: 0,   // 0 = render at the display rate; adaptive fallback only
+    quality: 1,      // 1 = full crest sampling; 0.5 under sustained load
     isMobile: false,
     // Two-finger pinch state, kept separate from the single-finger drag.
     pinch: null,      // { startDist, startZoom }
@@ -1114,23 +1142,27 @@
   }
 
   let lastFrame = 0
+  let slowStreak = 0
   function render() {
-    // Cap the WHOLE scene at 30 fps. On an Android WebView a full-screen
-    // `lighter` composite is expensive; a steady 30 fps reads far smoother
-    // than a 60 fps loop that keeps dropping frames. The signal clock is the
-    // same 30 Hz tick, so light and motion stay perfectly in step.
+    // Render at the display's own rate: a fixed 30 fps gate made the flowing
+    // current visibly step on a 60/120 Hz screen. The adaptive cap below only
+    // engages when the device genuinely cannot keep up.
     const now = signalClock()
-    if (now === lastFrame) {
+    if (state.frameCapMs > 0 && now - lastFrame < state.frameCapMs) {
       requestAnimationFrame(render)
       return
     }
+    const dtMs = lastFrame === 0 ? 16 : Math.min(64, now - lastFrame)
     lastFrame = now
     state.time = now
-    if (state.autoRotate && !state.dragging) state.targetYaw += 0.0032
-    // 0.22 keeps the same perceived easing at 30 fps as 0.12 did at 60 fps.
-    state.yaw += (state.targetYaw - state.yaw) * 0.22
-    state.pitch += (state.targetPitch - state.pitch) * 0.22
-    state.zoom += (state.targetZoom - state.zoom) * 0.22
+    const dt = dtMs / 1000
+    // Frame-rate independent easing: same perceived response at 60 or 120 Hz.
+    const ease = 1 - Math.exp(-dt * 7.5)
+    const frameStart = performance.now()
+    if (state.autoRotate && !state.dragging) state.targetYaw += 0.096 * dt
+    state.yaw += (state.targetYaw - state.yaw) * ease
+    state.pitch += (state.targetPitch - state.pitch) * ease
+    state.zoom += (state.targetZoom - state.zoom) * ease
 
     // Level of detail is a pure function of the eased zoom, so the bands feel
     // continuous rather than snapping at the moment you stop scrolling.
@@ -1233,6 +1265,24 @@
         }
       }
       ctx.restore()
+    }
+
+    // Adaptive frame gate: stay uncapped while the device keeps up, and fall
+    // back to 30 fps only after a sustained streak of expensive frames (an
+    // Android WebView under load). It recovers on its own when frames get
+    // cheap again, so a slow start never permanently caps the animation.
+    // Adaptive quality. Dropping the frame rate is exactly what causes the
+    // "stuttering" complaint, so the FIRST response to a slow device is fewer
+    // gradient stops (a little less crest precision), and only a sustained
+    // stall falls back to a 30 fps gate.
+    const cost = performance.now() - frameStart
+    if (cost > 13) slowStreak = Math.min(60, slowStreak + 1)
+    else slowStreak = Math.max(0, slowStreak - 2)
+    if (slowStreak >= 12) state.quality = 0.5
+    if (slowStreak >= 45) state.frameCapMs = 1000 / 30
+    if (slowStreak === 0) {
+      state.quality = 1
+      state.frameCapMs = 0
     }
 
     requestAnimationFrame(render)
