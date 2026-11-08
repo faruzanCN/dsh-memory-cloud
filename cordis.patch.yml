@@ -1,0 +1,12 @@
+- insert:
+    - id: dsh-memory-cloud
+      name: '@local/dsh-memory-cloud'
+      config:
+        # All durable DSH memories live in the session logs under $DSH_HOME.
+        sessionsDir: !!js dshHomePath('sessions')
+        # Upper bounds keep the nebula responsive on profiles with long histories.
+        maxSessions: 400
+        maxFragments: 28
+        maxFragmentChars: 220
+        # Extra authorities the Host-header check accepts (host or host:port).
+        trustedHosts: []

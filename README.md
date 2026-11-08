@@ -1,0 +1,79 @@
+# dsh-memory-cloud
+
+把当前 DSH（DeepSeek Harness）的**全部会话记忆**聚合成一幅可交互的 **3D 星云图**，并提供「神经元信号」皮肤切换。
+
+DSH 没有独立的记忆库：每一条持久记忆都是 `$DSH_HOME/sessions` 里某个会话日志中的一条已提交事件。本插件冷读所有 `session.v4.jsonl.zstd`（concatenated zstd frames 包裹的 JSONL），把每个会话折叠成一个记忆星云团，再依据 fork 血缘、共同话题、同工作区、共享工具与时间邻近计算会话之间的关联边，最后用纯 Canvas 2D 自实现的 3D 投影渲染。
+
+## 功能
+
+- **记忆聚合**：zstd 分帧解码 → 提取标题、真实工作目录、消息碎片、工具集、fork 血缘、关键词；过滤运行时上下文/技能目录/纯标点等注入文本。
+- **关联图**：TF-IDF 加权的话题余弦相似度 + 共享工具 + 同工作区 + 时间邻近 + fork 血缘，输出带 `kind`/权重/共享词的加权边；每节点与全局上限抑制"万能 hub"。
+- **两种皮肤**
+  - **星云**（默认）：不规则絮状气体云（无球核、无硬边界，参考 NASA 星系云团），团间用细电弧连接；电流靠**沿线明暗渐变**表现传递，暗区纯黑、余晖自然衰减。
+  - **神经元**：细胞体 + 递归分叉的树状树突 + 突触终扣 + 弯曲轴突，共用同一套信号波与流速。
+- **规模映射真实数据**：云团凝聚核数、光斑数、纤维/尘埃密度、记忆星数量、树突主干数与分叉深度，全部按该会话的实际碎片数/事件数归一化缩放。
+- **交互**：拖拽/单指旋转、滚轮/双指捏合缩放、悬停 tooltip、点击云团展开该会话全部记忆碎片、按标题/正文/工作区搜索、点击图例聚焦工作区。
+- **移动端适配**：`viewport-fit=cover` + safe-area、横向图例、全宽底部抽屉、触摸命中放大、dpr 上限 1.25。
+- **性能**：离屏渐变精灵缓存、按颜色/深度批量绘制、整场锁定 30fps，针对 Android WebView 的 Canvas2D 优化。
+
+## 安装
+
+在 DSH 中安装本地 bundle：
+
+```
+plugin_manager install_bundle D:\dsh-memory-cloud
+```
+
+或在插件管理界面选择该目录安装。安装后 bundle 会在当前 profile 全局启用。
+
+安装成功后，从左侧栏底部的「记忆星云」按钮打开；也可直接访问：
+
+```
+http://127.0.0.1:3080/memory-cloud/
+```
+
+> 该 URL 无需 DSH Web GUI 的启动 token（插件路由自带 Host 头校验，仅允许 localhost）。
+
+## 结构
+
+| 文件 | 作用 |
+|---|---|
+| `index.js` | Host 半：扫描/解码会话日志、聚合记忆与关联、注册 `/memory-cloud/*` HTTP 路由 |
+| `client.js` | Client 半：`sidebar.footer.action` 入口按钮 + `shell.overlay` 全屏层 + locale |
+| `nebula.js` | 3D 投影、两种皮肤渲染、信号波、交互与命中测试 |
+| `nebula.html` / `nebula.css` | 页面骨架与响应式深色样式 |
+| `cordis.patch.yml` | Loader patch，插入插件行并声明配置 |
+| `locale/*.json` | Plugin Manager 显示用的中英文标题/描述 |
+| `icon.svg` / `assets/icon.svg` | 插件图标 |
+
+## 配置
+
+`cordis.patch.yml` 中可调整：
+
+```yaml
+sessionsDir: !!js dshHomePath('sessions')  # 会话日志目录
+maxSessions: 400        # 最多聚合多少个会话
+maxFragments: 28        # 每个会话抽样的记忆碎片上限
+maxFragmentChars: 220   # 单条碎片字数上限
+trustedHosts: []        # 额外允许访问插件路由的 Host
+```
+
+## 数据接口
+
+`GET /memory-cloud/api/memories` 返回：
+
+```json
+{
+  "generatedAt": 0,
+  "sessions": [{ "id", "title", "workspaceLabel", "counts", "fragments", "topics", "tools", "parentSession", "createdAt", "updatedAt" }],
+  "workspaces": [{ "id", "label", "sessions" }],
+  "relations": [{ "source", "target", "weight", "kind", "kinds", "shared" }],
+  "stats": { "sessions", "relations", "fragments", "events", "user", "assistant", "tools", "turns", "oldest", "newest" }
+}
+```
+
+插件对会话日志与 profile **只读**，不写入任何状态；唯一的持久化是浏览器 `localStorage` 里的皮肤选择。
+
+## 许可
+
+MIT

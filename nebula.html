@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#070a1c">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>记忆星云 · Memory Nebula</title>
+<link rel="stylesheet" href="/memory-cloud/nebula.css">
+</head>
+<body>
+  <canvas id="sky" aria-label="3D 记忆星云图"></canvas>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1 id="title">记忆星云</h1>
+        <p id="subtitle">正在读取 DSH 会话记忆…</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="skin-switch" role="group" aria-label="皮肤切换">
+        <button id="skin-nebula" class="skin-btn active" type="button" data-skin="nebula" aria-pressed="true"><span class="skin-ico">✦</span><span class="skin-txt">星云</span></button>
+        <button id="skin-neuron" class="skin-btn" type="button" data-skin="neuron" aria-pressed="false"><span class="skin-ico">⌁</span><span class="skin-txt">神经元</span></button>
+      </div>
+      <label class="search">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L14 14"/></svg>
+        <input id="search" type="search" placeholder="搜索记忆 / 标题 / 工作区" autocomplete="off" spellcheck="false">
+      </label>
+      <button id="autorotate" class="chip active" type="button" aria-pressed="true" title="自动旋转" aria-label="自动旋转"><span class="chip-glyph">⟳</span><span class="chip-label">自动旋转</span></button>
+      <button id="reset" class="chip" type="button" title="复位视角" aria-label="复位视角"><span class="chip-glyph">⌖</span><span class="chip-label">复位视角</span></button>
+      <button id="close" class="chip close" type="button" title="关闭" aria-label="关闭">✕</button>
+    </div>
+  </header>
+
+  <aside id="legend" class="legend" aria-label="工作区图例"></aside>
+
+  <div id="relation-key" class="relation-key" aria-label="关联图例"></div>
+
+  <div id="stats" class="stats" aria-label="统计信息"></div>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+
+  <section id="detail" class="detail" hidden aria-label="记忆详情">
+    <div class="detail-grip" aria-hidden="true"></div>
+    <button id="detail-close" class="detail-close" type="button" aria-label="关闭详情">✕</button>
+    <h2 id="detail-title"></h2>
+    <div id="detail-meta" class="detail-meta"></div>
+    <div id="detail-fragments" class="detail-fragments"></div>
+  </section>
+
+  <div id="hint" class="hint">拖拽旋转 · 滚轮缩放 · 悬停查看 · 点击星团展开记忆</div>
+  <div id="loading" class="loading"><span class="spinner"></span><span>正在解码会话日志…</span></div>
+
+  <script src="/memory-cloud/nebula.js"></script>
+</body>
+</html>

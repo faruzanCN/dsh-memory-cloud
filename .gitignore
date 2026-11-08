@@ -1,0 +1,26 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Local DSH profile / runtime state (never commit)
+.dsh/
+*.log
+
+# Local test screenshots / probes
+_*.png
+_*.mjs
+_*.ps1
+
+# Environment / secrets
+.env
+.env.*
+*.pem

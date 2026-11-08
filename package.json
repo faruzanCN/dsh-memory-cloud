@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-memory-cloud",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Visualize all DSH session memories as an interactive 3D nebula.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/faruzanCN/dsh-memory-cloud.git" },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./nebula.html": "./nebula.html",
+    "./nebula.css": "./nebula.css",
+    "./nebula.js": "./nebula.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./assets/*": "./assets/*"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "nebula.html",
+    "nebula.css",
+    "nebula.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "assets/*"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar"]
+    }
+  }
+}
