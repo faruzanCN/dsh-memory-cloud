@@ -182,6 +182,27 @@
     return Math.floor((typeof performance !== 'undefined' ? performance.now() : Date.now()) / FRAME_MS) * FRAME_MS
   }
 
+  // ---------------------------------------------------------------------------
+  // Level of detail
+  //
+  // Zoom is the drill-down control. Each band reveals strictly more memory:
+  //   0  overview        clusters as gas, titles only
+  //   1  cluster         titles + counts, relations readable
+  //   2  fragment digest sampled fragment text, one cluster in focus
+  //   3  full text       complete untruncated fragments (fetched on demand)
+  // ---------------------------------------------------------------------------
+  const ZOOM_MIN = 0.35
+  const ZOOM_MAX = 9
+  const LOD_STEPS = [1.5, 2.8, 5]
+  function clampZoom(z) {
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z))
+  }
+  function lodFor(zoom) {
+    let lod = 0
+    for (const step of LOD_STEPS) if (zoom >= step) lod += 1
+    return lod
+  }
+
   // Minimal 3D vector helpers, used only to grow dendrite trees in world space.
   const vsub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
   const vadd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -324,6 +345,12 @@
     targetZoom: 1,
     skin: 'nebula',
     relations: [],       // { source, target, weight, kind, kinds, shared, a, b }
+    // --- level of detail (zoom drives how much memory is revealed) ---
+    lod: 0,              // 0 全景 · 1 星团 · 2 碎片摘要 · 3 碎片全文
+    focus: null,         // cluster being drilled into
+    focusDepth: 0,       // 0..1 eased blend of the focus translation
+    detailCache: new Map(), // sessionId -> full fragments (lazy)
+    detailPending: new Set(),
     dragging: false,
     lastX: 0,
     lastY: 0,
@@ -342,16 +369,18 @@
     typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
       || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
-  /** A phone needs a wider camera so the whole nebula fits its narrow viewport. */
+  /**
+   * Camera rig distance. Zoom is NOT applied here — `project()` multiplies by
+   * zoom as pure magnification. This only handles the mobile fit factor, which
+   * must stay constant so zooming behaves identically on every screen size.
+   */
   function cameraDistance() {
-    if (!state.isMobile) return 900 / state.zoom
+    if (!state.isMobile) return 900
     // The cloud spans roughly ±300 world units. To fit it inside a viewport of
-    // `w` pixels we need scale <= (w/2)/300; scale ~= camera/(camera+z), so a
-    // larger camera shrinks everything. Derive it from the actual width and
-    // keep a floor so a tablet never zooms out too far.
+    // `w` pixels the camera is pushed back on narrow screens.
     const usable = Math.max(240, state.w - 24)
     const fit = Math.max(1.6, Math.min(3.4, 1650 / usable))
-    return (900 * fit) / state.zoom
+    return 900 * fit
   }
 
   // -------------------------------------------------------------------------
@@ -495,8 +524,8 @@
     if (!hint) return
     const neuron = state.skin === 'neuron'
     hint.textContent = state.isMobile
-      ? (neuron ? '轻点神经元展开记忆 · 信号沿突触流动' : '单指旋转 · 双指缩放 · 轻点星团展开记忆')
-      : (neuron ? '拖拽旋转 · 滚轮缩放 · 点击神经元展开记忆 · 观察信号脉冲' : '拖拽旋转 · 滚轮缩放 · 悬停查看 · 点击星团展开记忆')
+      ? (neuron ? '双指放大可看到更多记忆 · 轻点神经元展开' : '双指放大可看到更多记忆 · 轻点星团展开')
+      : (neuron ? '滚轮放大逐层展开记忆 · 双击神经元钻入全文' : '滚轮放大逐层展开记忆 · 双击星团钻入全文')
   }
 
   function buildRelationKey(count) {
@@ -586,15 +615,24 @@
   function project(p) {
     const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw)
     const cp = Math.cos(state.pitch), sp = Math.sin(state.pitch)
+    // Drilling in translates the focused cluster toward the origin, so zooming
+    // actually flies INTO that nebula instead of just scaling a fixed rig.
+    const fd = state.focusDepth
+    const ox = state.focus && fd > 0 ? state.focus.center[0] * fd : 0
+    const oy = state.focus && fd > 0 ? state.focus.center[1] * fd : 0
+    const oz = state.focus && fd > 0 ? state.focus.center[2] * fd : 0
+    const dx = p[0] - ox, dy0 = p[1] - oy, dz = p[2] - oz
     // rotate around Y (yaw)
-    let x = p[0] * cy - p[2] * sy
-    let z = p[0] * sy + p[2] * cy
+    let x = dx * cy - dz * sy
+    let z = dx * sy + dz * cy
     // rotate around X (pitch)
-    let y = p[1] * cp - z * sp
-    z = p[1] * sp + z * cp
+    let y = dy0 * cp - z * sp
+    z = dy0 * sp + z * cp
     const camera = cameraDistance()
     const denom = camera + z
-    const scale = camera / Math.max(120, denom)
+    // Perspective falloff times the zoom multiplier: zoom is pure magnification,
+    // so it can climb far enough to read individual memories.
+    const scale = (camera / Math.max(120, denom)) * state.zoom
     return {
       x: state.w / 2 + x * scale,
       y: state.h / 2 + y * scale,
@@ -940,6 +978,141 @@
     ctx.restore()
   }
 
+  // -------------------------------------------------------------------------
+  // Level-of-detail helpers
+  // -------------------------------------------------------------------------
+
+  /** The cluster nearest the viewport centre — the one a deep zoom is about. */
+  function clusterAtCenter() {
+    let best = null, bestD = Infinity
+    for (const cluster of state.clusters) {
+      if (!matches(cluster)) continue
+      const pr = project(cluster.center)
+      const d = Math.hypot(pr.x - state.w / 2, pr.y - state.h / 2)
+      if (d < bestD) { bestD = d; best = cluster }
+    }
+    return best
+  }
+
+  /** Full, untruncated fragments for one cluster (lazy, cached). */
+  function requestDetail(cluster) {
+    const id = cluster.session.id
+    if (state.detailCache.has(id) || state.detailPending.has(id)) return
+    state.detailPending.add(id)
+    fetch(`/memory-cloud/api/session/${encodeURIComponent(id)}`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(detail => {
+        const bySeq = new Map((detail.fragments || []).map(f => [f.seq, f]))
+        state.detailCache.set(id, bySeq)
+        cluster.hasFullDetail = true
+      })
+      .catch(() => { /* keep the sampled digest on failure */ })
+      .finally(() => state.detailPending.delete(id))
+  }
+
+  /** Text for one fragment at the current detail level. */
+  function fragmentText(fragment, cluster, lod) {
+    const full = state.detailCache.get(cluster.session.id)
+    const source = (lod >= 3 && full && full.get(fragment.seq)) || fragment
+    const text = source.text || ''
+    const cap = lod >= 3 ? 320 : 90
+    return text.length > cap ? `${text.slice(0, cap).trimEnd()}…` : text
+  }
+
+  /** Fragment captions over their own stars — the actual remembered words. */
+  function drawFragmentCaptions(lod) {
+    const cluster = state.focus
+    if (!cluster || state.focusDepth < 0.35) return
+    ctx.save()
+    ctx.textBaseline = 'top'
+    const fontSize = lod >= 3 ? 11.5 : 10.5
+    ctx.font = `${fontSize}px Inter, "PingFang SC", system-ui, sans-serif`
+    const maxW = Math.min(state.isMobile ? 150 : 230, state.w * 0.42)
+    const limit = state.isMobile ? 8 : 14
+
+    // Collect candidates first, then place them greedily with collision
+    // rejection: overlapping captions were an unreadable pile of text.
+    const candidates = []
+    for (const star of cluster.stars) {
+      if (star.kind !== 'star' || !star.fragment) continue
+      const pr = project(star.pos)
+      if (pr.x < -60 || pr.x > state.w + 60 || pr.y < -30 || pr.y > state.h + 30) continue
+      if (pr.scale < 0.5) continue
+      const text = fragmentText(star.fragment, cluster, lod)
+      if (text === '') continue
+      candidates.push({ pr, text, isUser: star.fragment.kind === 'user' })
+    }
+    // Prefer the most central/most readable ones, then place top-to-bottom.
+    candidates.sort((a, b) => a.pr.y - b.pr.y)
+    const placed = []
+    let drawn = 0
+    for (const cand of candidates) {
+      if (drawn >= limit) break
+      const lines = wrapText(cand.text, maxW, ctx)
+      const lineH = fontSize + 2.5
+      const w = Math.max(...lines.map(l => ctx.measureText(l).width))
+      const x = cand.pr.x + 7
+      const y = cand.pr.y + 6
+      const rect = { x: x - 2, y: y - 1, w: w + 4, h: lines.length * lineH + 2 }
+      if (rect.x < 4 || rect.x + rect.w > state.w - 4) continue
+      if (rect.y < 4 || rect.y + rect.h > state.h - 4) continue
+      if (placed.some(r => overlaps(r, rect))) continue
+      placed.push(rect)
+      drawn += 1
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const ly = y + i * lineH
+        ctx.globalAlpha = 0.94
+        ctx.lineWidth = 3
+        ctx.strokeStyle = 'rgba(6,9,22,0.96)'
+        ctx.strokeText(lines[i], x, ly)
+        ctx.fillStyle = cand.isUser ? '#bfe6ff' : '#dcd0ff'
+        ctx.fillText(lines[i], x, ly)
+      }
+      // A hairline tying the caption to its star.
+      ctx.globalAlpha = 0.3
+      ctx.beginPath()
+      ctx.moveTo(cand.pr.x, cand.pr.y)
+      ctx.lineTo(x - 2, y + 3)
+      ctx.strokeStyle = cand.isUser ? 'rgba(150,210,255,0.8)' : 'rgba(200,170,255,0.8)'
+      ctx.lineWidth = 0.7
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  function overlaps(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  }
+
+  /** Greedy wrap by measured width, capped at 3 lines. */
+  function wrapText(text, maxW, context) {
+    const lines = []
+    let line = ''
+    for (const ch of text) {
+      const next = line + ch
+      if (context.measureText(next).width > maxW && line !== '') {
+        lines.push(line)
+        line = ch
+        if (lines.length >= 3) { lines[2] = `${lines[2].slice(0, -1)}…`; return lines }
+      } else {
+        line = next
+      }
+    }
+    if (line !== '') lines.push(line)
+    return lines
+  }
+
+  const LOD_LABELS = ['全景', '星团', '记忆摘要', '记忆全文']
+  function updateLodBadge() {
+    const badge = document.getElementById('lod-badge')
+    if (!badge) return
+    badge.textContent = LOD_LABELS[state.lod] || LOD_LABELS[0]
+    badge.dataset.lod = String(state.lod)
+    const title = state.focus ? state.focus.session.title : ''
+    badge.title = title ? `${LOD_LABELS[state.lod]} · ${title}` : LOD_LABELS[state.lod]
+  }
+
   let lastFrame = 0
   function render() {
     // Cap the WHOLE scene at 30 fps. On an Android WebView a full-screen
@@ -958,6 +1131,24 @@
     state.yaw += (state.targetYaw - state.yaw) * 0.22
     state.pitch += (state.targetPitch - state.pitch) * 0.22
     state.zoom += (state.targetZoom - state.zoom) * 0.22
+
+    // Level of detail is a pure function of the eased zoom, so the bands feel
+    // continuous rather than snapping at the moment you stop scrolling.
+    // Level of detail follows the user's INTENDED zoom, not the eased value:
+    // easing approaches its target asymptotically, so testing state.zoom made
+    // the band boundary unreachable in practice (2.759 vs a 2.8 threshold).
+    const lod = lodFor(state.targetZoom)
+    if (lod !== state.lod) { state.lod = lod; updateLodBadge() }
+
+    // From band 2 on, one cluster becomes the subject of the close-up.
+    if (lod >= 2) {
+      if (state.focus === null) state.focus = clusterAtCenter()
+    } else {
+      state.focus = null
+    }
+    const wantFocus = lod >= 2 && state.focus !== null ? 1 : 0
+    state.focusDepth += (wantFocus - state.focusDepth) * 0.12
+    if (state.focus && lod >= 3) requestDetail(state.focus)
 
     drawBackground()
 
@@ -979,29 +1170,67 @@
       drawNebulaStars(projected)
     }
 
-    // Cluster labels: on a narrow screen draw fewer of them to avoid clutter.
+    // Captions only make sense once a cluster fills the view.
+    if (lod >= 2) drawFragmentCaptions(lod)
+
+    // Cluster labels. Higher bands show more: title, then counts, then the
+    // dominant topics, so zooming literally reveals more of the memory.
     if (state.zoom > 0.75) {
       ctx.save()
-      ctx.font = state.isMobile ? '10px Inter, system-ui, sans-serif' : '11px Inter, system-ui, sans-serif'
+      const baseSize = state.isMobile ? 10 : 11
       ctx.textBaseline = 'middle'
       let drawn = 0
       for (const cluster of state.clusters) {
         if (!matches(cluster)) continue
-        if (state.isMobile && drawn >= 8) break
+        // At deep zoom only the focused cluster is labelled; the rest are off
+        // in the surrounding fog and would only clutter the close-up.
+        if (lod >= 2 && cluster !== state.focus) continue
+        if (state.isMobile && lod < 2 && drawn >= 8) break
         const pr = project(cluster.center)
-        if (pr.scale < (state.isMobile ? 0.30 : 0.55)) continue
+        if (lod < 2 && pr.scale < (state.isMobile ? 0.30 : 0.55)) continue
         drawn += 1
-        const label = cluster.session.title.length > (state.isMobile ? 14 : 22)
-          ? `${cluster.session.title.slice(0, state.isMobile ? 14 : 22)}…`
-          : cluster.session.title
-        // Sit the label just below the cloud instead of on top of the gas.
-        const ly = pr.y + 30 * pr.scale + 8
-        ctx.globalAlpha = 0.8
+
+        const trunc = lod >= 2 ? 40 : state.isMobile ? 14 : 22
+        const title = cluster.session.title
+        const label = title.length > trunc ? `${title.slice(0, trunc)}…` : title
+        const size = lod >= 2 ? baseSize + 3 : baseSize
+        ctx.font = `${lod >= 2 ? 600 : 400} ${size}px Inter, "PingFang SC", system-ui, sans-serif`
+        // Capped so a very deep zoom does not push the title off-screen.
+        const ly = pr.y + Math.min(120, 30 * pr.scale) + 8
+        ctx.globalAlpha = 0.88
         ctx.lineWidth = 3
         ctx.strokeStyle = 'rgba(7,10,28,0.92)'
         ctx.strokeText(label, pr.x + 6, ly)
         ctx.fillStyle = '#d6deff'
         ctx.fillText(label, pr.x + 6, ly)
+
+        // Band 1+: activity counts beside the title.
+        if (lod >= 1) {
+          const c = cluster.session.counts
+          const meta = `${c.fragments} 条记忆 · ${c.user}/${c.assistant} 对话 · ${c.tools} 工具`
+          ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
+          ctx.globalAlpha = 0.7
+          ctx.strokeText(meta, pr.x + 6, ly + size + 4)
+          ctx.fillStyle = '#9db0e6'
+          ctx.fillText(meta, pr.x + 6, ly + size + 4)
+        }
+        // Band 2+: the topics that put this session where it is.
+        if (lod >= 2 && (cluster.session.topics || []).length > 0) {
+          const words = cluster.session.topics.slice(0, 6).map(t => t.word).join(' · ')
+          ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
+          ctx.globalAlpha = 0.6
+          ctx.strokeText(words, pr.x + 6, ly + size * 2 + 8)
+          ctx.fillStyle = '#8fa6d8'
+          ctx.fillText(words, pr.x + 6, ly + size * 2 + 8)
+        }
+        // Band 3: a footer telling the reader the text is now complete.
+        if (lod >= 3) {
+          const status = cluster.hasFullDetail ? '已载入完整记忆' : '正在载入完整记忆…'
+          ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
+          ctx.globalAlpha = 0.55
+          ctx.fillStyle = cluster.hasFullDetail ? '#8fd6b4' : '#d8c98a'
+          ctx.fillText(status, pr.x + 6, ly + size * 3 + 12)
+        }
       }
       ctx.restore()
     }
@@ -1023,8 +1252,10 @@
       const pr = project(star.pos)
       const d = Math.hypot(pr.x - x, pr.y - y)
       const isCloudTarget = star.kind === 'anchor' || star.kind === 'core'
+      // Capped: at deep zoom an uncapped cloud radius would swallow the whole
+      // viewport and make nothing else selectable.
       const radius = isCloudTarget
-        ? Math.max(state.isMobile ? 30 : 24, 30 * pr.scale)
+        ? Math.min(state.isMobile ? 60 : 48, Math.max(state.isMobile ? 30 : 24, 30 * pr.scale))
         : Math.max(state.isMobile ? 20 : 8, star.size * pr.scale + touchPad)
       if (d < radius && d < bestDist) {
         bestDist = d
@@ -1063,6 +1294,10 @@
   function openDetail(cluster) {
     const s = cluster.session
     state.selected = cluster
+    state.focus = cluster
+    // Opening a memory is a decision to look at THAT one; at a shallow zoom we
+    // also drift toward its band so the close-up is ready when the user zooms.
+    if (state.zoom < LOD_STEPS[0]) state.targetZoom = LOD_STEPS[0] + 0.4
     el.detailTitle.textContent = s.title
     const date = s.createdAt ? new Date(s.createdAt).toLocaleString() : '—'
     el.detailMeta.innerHTML = [
@@ -1130,7 +1365,7 @@
     if (state.pinch !== null && state.pointers.size >= 2) {
       const dist = pointerDist()
       if (state.pinch.startDist > 0 && dist > 0) {
-        state.targetZoom = Math.max(0.35, Math.min(3.2, state.pinch.startZoom * (dist / state.pinch.startDist)))
+        state.targetZoom = clampZoom(state.pinch.startZoom * (dist / state.pinch.startDist))
         stopAutoRotate()
       }
       return
@@ -1192,11 +1427,21 @@
   canvas.addEventListener('pointerleave', () => { el.tooltip.hidden = true; state.hover = null })
   canvas.addEventListener('wheel', e => {
     e.preventDefault()
-    state.targetZoom = Math.max(0.35, Math.min(3.2, state.targetZoom * (e.deltaY > 0 ? 0.9 : 1.1)))
+    state.targetZoom = clampZoom(state.targetZoom * (e.deltaY > 0 ? 0.88 : 1.14))
   }, { passive: false })
   // Block the browser's own pinch-zoom / pull-to-refresh over the canvas.
   canvas.addEventListener('gesturestart', e => e.preventDefault())
   canvas.addEventListener('gesturechange', e => e.preventDefault())
+
+  // Double-click / double-tap a cluster to fly all the way in and read it.
+  canvas.addEventListener('dblclick', e => {
+    const star = hitTest(e.clientX, e.clientY)
+    if (!star) return
+    state.focus = star.cluster
+    stopAutoRotate()
+    state.targetZoom = ZOOM_MAX * 0.72
+    if (state.zoom >= LOD_STEPS[2]) requestDetail(star.cluster)
+  })
 
   el.search.addEventListener('input', () => { state.query = el.search.value })
   for (const btn of el.skinButtons) {
@@ -1209,6 +1454,7 @@
   })
   el.reset.addEventListener('click', () => {
     state.targetYaw = 0.6; state.targetPitch = 0.32; state.targetZoom = 1
+    state.focus = null
   })
   el.detailClose.addEventListener('click', closeDetail)
   // Inside the Harness the ✕ asks the host overlay to close; opened directly

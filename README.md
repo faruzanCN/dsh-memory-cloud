@@ -12,7 +12,16 @@ DSH 没有独立的记忆库：每一条持久记忆都是 `$DSH_HOME/sessions` 
   - **星云**（默认）：不规则絮状气体云（无球核、无硬边界，参考 NASA 星系云团），团间用细电弧连接；电流靠**沿线明暗渐变**表现传递，暗区纯黑、余晖自然衰减。
   - **神经元**：细胞体 + 递归分叉的树状树突 + 突触终扣 + 弯曲轴突，共用同一套信号波与流速。
 - **规模映射真实数据**：云团凝聚核数、光斑数、纤维/尘埃密度、记忆星数量、树突主干数与分叉深度，全部按该会话的实际碎片数/事件数归一化缩放。
-- **交互**：拖拽/单指旋转、滚轮/双指捏合缩放、悬停 tooltip、点击云团展开该会话全部记忆碎片、按标题/正文/工作区搜索、点击图例聚焦工作区。
+- **分级细节（LOD）**：缩放即钻取，每放大一级就多露出一层记忆——
+  | 等级 | 徽章 | 触发缩放 | 显示内容 |
+  |---|---|---|---|
+  | 0 | 全景 | < 1.5× | 云团 + 会话标题 |
+  | 1 | 星团 | ≥ 1.5× | 标题 + 记忆条数/对话数/工具数 |
+  | 2 | 记忆摘要 | ≥ 2.8× | 自动聚焦最近星团并浮现碎片摘要 + 话题关键词 |
+  | 3 | 记忆全文 | ≥ 5× | 按需拉取该会话**完整未截断**碎片（含全文标记） |
+
+  放大到 2 级以上时视角会平滑"飞入"目标星团，其余云团退到四周雾中；缩回后自动释放焦点。双击星团可直接钻到底。
+- **交互**：拖拽/单指旋转、滚轮/双指捏合缩放、悬停 tooltip、点击云团展开该会话记忆、按标题/正文/工作区搜索、点击图例聚焦工作区。
 - **移动端适配**：`viewport-fit=cover` + safe-area、横向图例、全宽底部抽屉、触摸命中放大、dpr 上限 1.25。
 - **性能**：离屏渐变精灵缓存、按颜色/深度批量绘制、整场锁定 30fps，针对 Android WebView 的 Canvas2D 优化。
 
@@ -60,7 +69,7 @@ trustedHosts: []        # 额外允许访问插件路由的 Host
 
 ## 数据接口
 
-`GET /memory-cloud/api/memories` 返回：
+`GET /memory-cloud/api/memories` —— 聚合摘要（每会话最多抽样 `maxFragments` 条碎片）：
 
 ```json
 {
@@ -70,6 +79,12 @@ trustedHosts: []        # 额外允许访问插件路由的 Host
   "relations": [{ "source", "target", "weight", "kind", "kinds", "shared" }],
   "stats": { "sessions", "relations", "fragments", "events", "user", "assistant", "tools", "turns", "oldest", "newest" }
 }
+```
+
+`GET /memory-cloud/api/session/:id` —— 单个会话的**完整**碎片（LOD 3 按需拉取，按文件 mtime 缓存；未知 id 返回 404）：
+
+```json
+{ "id", "title", "workspaceLabel", "createdAt", "updatedAt", "counts", "fragments": [{ "kind", "text", "truncated", "time", "seq" }] }
 ```
 
 插件对会话日志与 profile **只读**，不写入任何状态；唯一的持久化是浏览器 `localStorage` 里的皮肤选择。

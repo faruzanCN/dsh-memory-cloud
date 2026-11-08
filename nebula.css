@@ -70,6 +70,17 @@ body {
 .chip-glyph { font-size: 15px; line-height: 1; }
 .chip-label { display: inline; }
 
+/* Detail-level badge: shows which zoom band the reader is currently in. */
+.lod-badge {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px;
+  border-radius: 7px; border: 1px solid var(--mc-line); background: var(--mc-panel);
+  color: var(--mc-muted); font-size: 11px; font-weight: 600; letter-spacing: .3px;
+  white-space: nowrap; backdrop-filter: blur(12px); user-select: none;
+}
+.lod-badge[data-lod="1"] { color: #9fd0ff; border-color: rgba(120, 180, 255, .45); }
+.lod-badge[data-lod="2"] { color: #c3aaff; border-color: rgba(170, 140, 255, .5); background: rgba(70, 50, 130, .42); }
+.lod-badge[data-lod="3"] { color: #7fe6bd; border-color: rgba(110, 230, 190, .55); background: rgba(30, 90, 75, .45); }
+
 /* Skin switch: a two-option segmented control in the toolbar. */
 .skin-switch {
   display: inline-flex; align-items: center; gap: 2px; height: 34px; padding: 3px;
@@ -190,6 +201,7 @@ body {
   .brand-text h1 { font-size: 15px; }
   .brand-text p { font-size: 10.5px; max-width: 40vw; }
   .topbar-actions { gap: 6px; }
+  .lod-badge { height: 28px; padding: 0 8px; font-size: 10px; }
   .skin-switch { height: 36px; padding: 3px; }
   .skin-btn { height: 28px; padding: 0 8px; font-size: 0; gap: 0; }
   .skin-ico { font-size: 15px; }

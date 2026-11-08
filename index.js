@@ -135,7 +135,9 @@ function sampleEvenly(items, cap) {
 // Folding one Session log into a memory cluster
 // ---------------------------------------------------------------------------
 
-function foldEvents(sessionId, workspaceDir, events, limits) {
+function foldEvents(sessionId, workspaceDir, events, limits, options = {}) {
+  const full = options.full === true
+  const maxChars = full ? 4000 : limits.maxFragmentChars
   let title = ''
   let createdAt = 0
   let updatedAt = 0
@@ -177,7 +179,7 @@ function foldEvents(sessionId, workspaceDir, events, limits) {
         if (text === '' || !hasSubstance(text)) break
         userMessages += 1
         collectWords(text, wordCounts)
-        const clipped = clip(text, limits.maxFragmentChars)
+        const clipped = clip(text, maxChars)
         rawFragments.push({ kind: 'user', text: clipped.text, truncated: clipped.truncated, time, seq: event.seq })
         break
       }
@@ -186,7 +188,7 @@ function foldEvents(sessionId, workspaceDir, events, limits) {
         if (text === '' || !hasSubstance(text)) break
         assistantMessages += 1
         collectWords(text, wordCounts)
-        const clipped = clip(text, limits.maxFragmentChars)
+        const clipped = clip(text, maxChars)
         rawFragments.push({ kind: 'assistant', text: clipped.text, truncated: clipped.truncated, time, seq: event.seq })
         break
       }
@@ -205,7 +207,7 @@ function foldEvents(sessionId, workspaceDir, events, limits) {
   // A Session with no user turns yet (only runtime bootstrap) is not a memory.
   if (userMessages === 0 && assistantMessages === 0) return null
 
-  const fragments = sampleEvenly(rawFragments, limits.maxFragments)
+  const fragments = full ? rawFragments : sampleEvenly(rawFragments, limits.maxFragments)
   if (title === '') {
     const firstUser = rawFragments.find(fragment => fragment.kind === 'user')
     title = firstUser ? clip(firstUser.text, 42).text || '未命名记忆' : '未命名记忆'
@@ -366,7 +368,9 @@ class MemoryReader {
   constructor(directory, limits) {
     this.directory = directory
     this.limits = limits
-    this.cache = new Map() // file path -> { mtimeMs, size, cluster }
+    this.cache = new Map() // file path -> { mtimeMs, size, cluster, events }
+    this.detailCache = new Map() // session id -> { mtimeMs, size, detail }
+    this.fileIndex = new Map()  // session id -> file descriptor
   }
 
   async findLogFiles() {
@@ -426,8 +430,52 @@ class MemoryReader {
     if (this.cache.size >= this.limits.maxSessions * 2) {
       this.cache.delete(this.cache.keys().next().value)
     }
-    this.cache.set(file.path, { mtimeMs: info.mtimeMs, size: info.size, cluster })
+    this.cache.set(file.path, { mtimeMs: info.mtimeMs, size: info.size, cluster, events })
+    this.fileIndex.set(file.sessionId, file)
     return cluster
+  }
+
+  /**
+   * Full, untruncated fragments for ONE session. The summary endpoint samples
+   * at most `maxFragments`; zooming into a cluster demands the whole memory,
+   * so the client fetches this lazily and caches it here by file mtime.
+   */
+  async sessionDetail(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') return null
+    let file = this.fileIndex.get(sessionId)
+    if (file === undefined) {
+      for (const f of await this.findLogFiles()) if (f.sessionId === sessionId) { file = f; break }
+      if (file === undefined) return null
+      this.fileIndex.set(sessionId, file)
+    }
+    const info = await stat(file.path).catch(() => null)
+    if (info === null) return null
+    const cached = this.detailCache.get(sessionId)
+    if (cached != null && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.detail
+
+    let events = this.cache.get(file.path)?.events
+    if (events === undefined) {
+      const text = decodeSessionLog(await readFile(file.path).catch(() => Buffer.alloc(0)))
+      if (text === null) return null
+      events = []
+      for (const line of text.split('\n')) {
+        if (line.trim() === '') continue
+        try { events.push(JSON.parse(line)) } catch { /* partial trailing line */ }
+      }
+    }
+    const cluster = foldEvents(file.sessionId, file.workspaceDir, events, this.limits, { full: true })
+    if (cluster === null) return null
+    const detail = {
+      id: cluster.id,
+      title: cluster.title,
+      workspaceLabel: cluster.workspaceLabel,
+      createdAt: cluster.createdAt,
+      updatedAt: cluster.updatedAt,
+      counts: cluster.counts,
+      fragments: cluster.fragments,
+    }
+    this.detailCache.set(sessionId, { mtimeMs: info.mtimeMs, size: info.size, detail })
+    return detail
   }
 
   async snapshot() {
@@ -542,6 +590,12 @@ export function apply(ctx, config) {
       if (path === '/memory-cloud/api/memories') {
         const data = await reader.snapshot()
         return sendJson(res, 200, data)
+      }
+      const detailMatch = /^\/memory-cloud\/api\/session\/([A-Za-z0-9_.-]+)$/.exec(path)
+      if (detailMatch !== null) {
+        const detail = await reader.sessionDetail(decodeURIComponent(detailMatch[1]))
+        if (detail === null) return sendJson(res, 404, { error: 'Session not found' })
+        return sendJson(res, 200, detail)
       }
       if (path === '/memory-cloud/' || path === '/memory-cloud/index.html') {
         return sendFile(res, 'text/html; charset=utf-8', await readAsset('nebula.html'))
