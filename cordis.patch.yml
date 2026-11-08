@@ -1,6 +1,6 @@
 - insert:
     - id: dsh-memory-cloud
-      name: '@local/dsh-memory-cloud'
+      name: 'dsh-memory-cloud'
       config:
         # All durable DSH memories live in the session logs under $DSH_HOME.
         sessionsDir: !!js dshHomePath('sessions')

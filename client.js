@@ -11,7 +11,7 @@
  * imported as a module.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-memory-cloud',
+  id: 'dsh-memory-cloud',
   factory(require) {
     const React = require('react')
     const h = React.createElement
