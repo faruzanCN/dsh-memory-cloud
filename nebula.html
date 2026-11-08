@@ -41,6 +41,22 @@
 
   <div id="relation-key" class="relation-key" aria-label="关联图例"></div>
 
+  <section id="live-panel" class="live-panel" aria-label="实时记忆活动">
+    <header class="live-head">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span class="live-title">实时记忆流</span>
+      <button id="live-toggle" class="live-toggle" type="button" aria-pressed="true" title="收起/展开">−</button>
+    </header>
+    <div id="live-body">
+      <div class="live-metrics">
+        <span><b id="live-writes">0</b> 写入</span>
+        <span><b id="live-reads">0</b> 读取</span>
+        <span class="live-rate"><b id="live-rate">0</b> 事件/分</span>
+      </div>
+      <div id="live-feed" class="live-feed" aria-live="polite"></div>
+    </div>
+  </section>
+
   <div id="stats" class="stats" aria-label="统计信息"></div>
 
   <div id="tooltip" class="tooltip" hidden></div>

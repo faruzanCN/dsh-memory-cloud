@@ -17,6 +17,133 @@ import { zstdDecompressSync } from 'node:zlib'
 
 export const inject = ['webServer']
 
+// Events that constitute a memory access. `session/event` is the post-commit
+// append feed, so every item we forward is already durable in the session log.
+// "write" = a memory being stored; "read" = a memory being consulted.
+const LIVE_EVENT_KINDS = new Map([
+  ['user/message', 'write'],
+  ['assistant/message', 'write'],
+  ['session/title', 'write'],
+  ['agent/inbox/spliced', 'read'],
+  ['request/context', 'read'],
+  ['tool/call', 'read'],
+  ['tool/result', 'read'],
+  ['compaction/summary', 'read'],
+  ['turn/end', 'read'],
+])
+
+/**
+ * Broadcast hub for live memory activity. One SSE connection per open nebula
+ * page; the registration is an effect so plugin unload tears every socket,
+ * listener and timer down cleanly.
+ */
+class LiveHub {
+  constructor() {
+    this.clients = new Set()
+    this.recent = []        // replay buffer so a fresh page sees the last burst
+    this.seq = 0
+    this.heartbeat = null
+    this.lastSent = new Map() // "session:kind:type:tool" -> timestamp
+  }
+
+  add(res) {
+    const client = { res, alive: true }
+    this.clients.add(client)
+    if (this.clients.size === 1) {
+      this.heartbeat = setInterval(() => {
+        for (const c of this.clients) if (c.alive) c.res.write(': ping\n\n')
+      }, 15000)
+    }
+    // Initial handshake + replay of the last few events.
+    res.write(`event: hello\ndata: ${JSON.stringify({ clients: this.clients.size })}\n\n`)
+    for (const item of this.recent) res.write(`data: ${JSON.stringify(item)}\n\n`)
+    const close = () => this.remove(client)
+    res.on('close', close)
+    res.on('error', close)
+    return () => this.remove(client)
+  }
+
+  remove(client) {
+    client.alive = false
+    this.clients.delete(client)
+    if (this.clients.size === 0 && this.heartbeat !== null) {
+      clearInterval(this.heartbeat)
+      this.heartbeat = null
+    }
+  }
+
+  publish(item) {
+    // A single agent step can emit dozens of tool/call + tool/result rows.
+    // Coalesce identical chatter inside a short window so the feed shows the
+    // shape of activity rather than drowning in duplicates.
+    const key = `${item.sessionId}:${item.kind}:${item.type}:${item.tool || ''}`
+    const now = Date.now()
+    const noisy = item.type === 'tool/call' || item.type === 'tool/result'
+    if (noisy) {
+      const last = this.lastSent.get(key) || 0
+      if (now - last < 600) return
+      this.lastSent.set(key, now)
+      if (this.lastSent.size > 200) this.lastSent.clear()
+    }
+    item.seq = ++this.seq
+    this.recent.push(item)
+    if (this.recent.length > 24) this.recent.shift()
+    const line = `data: ${JSON.stringify(item)}\n\n`
+    for (const c of this.clients) {
+      if (!c.alive) continue
+      try { c.res.write(line) } catch { this.remove(c) }
+    }
+  }
+
+  dispose() {
+    if (this.heartbeat !== null) clearInterval(this.heartbeat)
+    this.heartbeat = null
+    for (const c of this.clients) {
+      c.alive = false
+      try { c.res.end() } catch { /* already gone */ }
+    }
+    this.clients.clear()
+  }
+}
+
+/** Fold one raw committed session event into a compact live activity item. */
+function liveItemFromEvent(session, event) {
+  const kind = LIVE_EVENT_KINDS.get(event?.type)
+  if (kind === undefined) return null
+  const data = event.data || {}
+  const sessionId = typeof session?.id === 'string' ? session.id : ''
+  if (sessionId === '') return null
+  const text = livePreview(event, data)
+  const title = typeof session?.title === 'string' ? session.title : ''
+  return {
+    sessionId,
+    sessionTitle: title,
+    kind,
+    type: event.type,
+    text,
+    tool: typeof data.name === 'string' ? data.name : undefined,
+    time: typeof event.time === 'number' ? event.time : Date.now(),
+  }
+}
+
+function livePreview(event, data) {
+  let content
+  switch (event.type) {
+    case 'user/message': content = data.content; break
+    case 'assistant/message': content = data.message?.content; break
+    case 'tool/call': return typeof data.name === 'string' ? `调用 ${data.name}` : ''
+    case 'tool/result': return '工具返回'
+    case 'turn/end': return '一轮对话完成'
+    case 'compaction/summary': return '上下文压缩 / 记忆整理'
+    case 'request/context': return '读取运行时上下文'
+    default: content = null
+  }
+  if (content == null) return event.type === 'session/title' && typeof data.title === 'string' ? data.title : ''
+  const s = contentText(content)
+  if (s.startsWith(RUNTIME_CONTEXT_PREFIX)) return ''   // injected scaffolding
+  return s.replace(/\s+/g, ' ').slice(0, 90)
+}
+
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 const LOG_PATTERN = /^session(?:\.[\w-]+)*\.jsonl\.zstd$/
 const RUNTIME_CONTEXT_PREFIX = 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'
@@ -564,6 +691,26 @@ export function apply(ctx, config) {
     ? config.sessionsDir
     : (process.env.DSH_HOME ? join(process.env.DSH_HOME, 'sessions') : '')
   const reader = new MemoryReader(sessionsDir, limits)
+  const live = new LiveHub()
+  // Title is not on the Session object for every event; keep a small map so the
+  // HUD can label the cluster being written to.
+  const liveTitles = new Map()
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (event?.type === 'session/title' && typeof event.data?.title === 'string') {
+        liveTitles.set(session.id, event.data.title)
+      }
+      const item = liveItemFromEvent(session, event)
+      if (item === null) return
+      if (!item.sessionTitle) item.sessionTitle = liveTitles.get(item.sessionId) || ''
+      // Ignore empty scaffolding previews (runtime context, empty assistant).
+      if (item.type !== 'tool/call' && item.type !== 'tool/result' && item.text === '') return
+      live.publish(item)
+    } catch (error) {
+      ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
+    }
+  })
+  ctx.effect(() => () => live.dispose(), 'memory-cloud: live hub')
 
   // The DSH /api browser-trust fence does not cover these routes, so the
   // handler checks the Host header itself (DNS-rebinding defense), mirroring
@@ -587,6 +734,19 @@ export function apply(ctx, config) {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'Method not allowed' })
       const path = new URL(req.url ?? '/', 'http://dsh.local').pathname
 
+      if (path === '/memory-cloud/api/live') {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-store',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        })
+        res.write(': connected\n\n')
+        const release = live.add(res)
+        req.on('close', release)
+        req.on('error', release)
+        return
+      }
       if (path === '/memory-cloud/api/memories') {
         const data = await reader.snapshot()
         return sendJson(res, 200, data)

@@ -16,6 +16,12 @@
     legend: document.getElementById('legend'),
     relationKey: document.getElementById('relation-key'),
     stats: document.getElementById('stats'),
+    livePanel: document.getElementById('live-panel'),
+    liveFeed: document.getElementById('live-feed'),
+    liveWrites: document.getElementById('live-writes'),
+    liveReads: document.getElementById('live-reads'),
+    liveRate: document.getElementById('live-rate'),
+    liveToggle: document.getElementById('live-toggle'),
     skinButtons: [...document.querySelectorAll('.skin-btn')],
     tooltip: document.getElementById('tooltip'),
     detail: document.getElementById('detail'),
@@ -386,6 +392,17 @@
     w: 0, h: 0, dpr: 1,
     time: 0,
     quality: 1,      // 1 = full crest sampling; 0.5 under sustained load
+    // --- live memory activity ---
+    live: {
+      connected: false,
+      writes: 0,
+      reads: 0,
+      pulses: [],     // expanding rings on the target cloud
+      newborns: [],   // fresh stars that fade into the cloud
+      times: [],      // timestamps for the events/minute readout
+      lastBurst: 0,
+      liveClusters: new Map(), // sessions not on disk yet -> ephemeral nebula
+    },
     isMobile: false,
     // Two-finger pinch state, kept separate from the single-finger drag.
     pinch: null,      // { startDist, startZoom }
@@ -531,6 +548,223 @@
       : `${data.stats.sessions} 个会话记忆 · ${data.stats.fragments} 颗记忆星 · 拖拽以探索`
     if (state.isMobile) el.search.placeholder = '搜索记忆'
     updateHint()
+    connectLive()
+  }
+
+  // -------------------------------------------------------------------------
+  // Live memory activity
+  //
+  // `session/event` is the post-commit append feed, so each SSE item is a
+  // memory that was JUST written (or a memory being read back as context).
+  // A brand-new session has no cluster on disk yet, so we grow a small
+  // ephemeral cloud for it and retire it once the log appears on the next
+  // snapshot. This makes an active conversation visibly bloom.
+  // -------------------------------------------------------------------------
+
+  function escapeLive(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  }
+
+  function connectLive() {
+    if (typeof EventSource === 'undefined') return
+    let source
+    try { source = new EventSource('/memory-cloud/api/live') } catch { return }
+    source.onopen = () => {
+      state.live.connected = true
+      el.livePanel.dataset.connected = 'true'
+    }
+    source.onerror = () => {
+      state.live.connected = false
+      el.livePanel.dataset.connected = 'false'
+    }
+    source.onmessage = event => {
+      let item
+      try { item = JSON.parse(event.data) } catch { return }
+      if (!item || !item.sessionId) return
+      onLiveItem(item)
+    }
+  }
+
+  function clusterForLive(item) {
+    let cluster = state.clusters.find(c => c.session.id === item.sessionId)
+    if (cluster) return cluster
+    // Not yet on disk: create a temporary nebula at a free spot.
+    let ephemeral = state.live.liveClusters.get(item.sessionId)
+    if (!ephemeral) {
+      const idx = state.live.liveClusters.size
+      const rand = rng(hash(item.sessionId) ^ 0x51ab)
+      const angle = idx * 2.399 + rand()
+      const radius = 150 + rand() * 90
+      const center = [Math.cos(angle) * radius, (rand() - 0.5) * 170, Math.sin(angle) * radius]
+      const cloud = buildCloud(center, hash(item.sessionId) ^ 0x77, 0.8, 0.25)
+      ephemeral = {
+        session: {
+          id: item.sessionId,
+          title: item.sessionTitle || '正在进行的对话',
+          counts: { events: 0, user: 0, assistant: 0, tools: 0, turns: 0, fragments: 0 },
+          fragments: [], topics: [],
+        },
+        color: PALETTE[(idx + 3) % PALETTE.length],
+        center, cloud, stars: [], ephemeral: true,
+        dendrites: buildDendrites(center, hash(item.sessionId) ^ 0x2c91, 0.35),
+        core: null, weight: 0.25,
+        lobeCenters: cloud.lobeCenters,
+      }
+      // Reuse the normal hit-test core so tapping the new cloud works.
+      const core = {
+        kind: 'core', cluster: ephemeral, isClusterCore: true, fragment: null,
+        pos: center.slice(), size: 2.2, phase: 0, color: ephemeral.color,
+      }
+      ephemeral.core = core
+      state.stars.push(core)
+      state.live.liveClusters.set(item.sessionId, ephemeral)
+      state.clusters.push(ephemeral)
+    }
+    if (item.sessionTitle && ephemeral.session.title === '正在进行的对话') {
+      ephemeral.session.title = item.sessionTitle
+    }
+    return ephemeral
+  }
+
+  function onLiveItem(item) {
+    const now = performance.now()
+    const cluster = clusterForLive(item)
+    cluster.lastLiveAt = now
+    const isWrite = item.kind === 'write'
+    if (isWrite) state.live.writes += 1
+    else state.live.reads += 1
+    state.live.times.push(now)
+    if (state.live.times.length > 120) state.live.times.shift()
+
+    // Expanding ring on the target cloud: write rings ripple outward, read
+    // rings ripple inward (memory being consulted / pulled back).
+    state.live.pulses.push({
+      cluster, born: now, kind: isWrite ? 'write' : 'read',
+      color: isWrite ? [150, 215, 255] : [235, 195, 130],
+    })
+    if (state.live.pulses.length > 26) state.live.pulses.shift()
+
+    if (isWrite) {
+      const lobe = cluster.cloud.lobeCenters[
+        Math.floor(Math.random() * cluster.cloud.lobeCenters.length)] || cluster.center
+      state.live.newborns.push({
+        cluster, born: now,
+        pos: [lobe[0] + (Math.random() - 0.5) * 16, lobe[1] + (Math.random() - 0.5) * 12, lobe[2] + (Math.random() - 0.5) * 16],
+        color: cluster.color,
+        phase: Math.random() * Math.PI * 2,
+      })
+      if (state.live.newborns.length > 60) state.live.newborns.shift()
+      cluster.session.counts.fragments += 1
+    }
+
+    state.live.lastBurst = now
+    el.livePanel.dataset.active = 'true'
+    el.liveWrites.textContent = String(state.live.writes)
+    el.liveReads.textContent = String(state.live.reads)
+    appendLiveRow(item, cluster)
+    updateLiveRate(now)
+  }
+
+  function appendLiveRow(item, cluster) {
+    if (el.liveFeed.querySelector('.live-empty')) el.liveFeed.innerHTML = ''
+    const row = document.createElement('div')
+    row.className = `live-row ${item.kind}`
+    const label = item.kind === 'write' ? '写入' : '读取'
+    const body = item.text || item.tool || item.type || ''
+    const title = cluster.session.title || '会话'
+    row.innerHTML = `<span class="live-tag">${label}</span><span class="live-text" title="${escapeLive(body)}"><b>${escapeLive(title.slice(0, 14))}</b> ${escapeLive(body.slice(0, 60))}</span>`
+    el.liveFeed.prepend(row)
+    while (el.liveFeed.children.length > 14) el.liveFeed.lastChild.remove()
+  }
+
+  function updateLiveRate(now) {
+    const recent = state.live.times.filter(t => now - t < 60000)
+    el.liveRate.textContent = String(recent.length)
+  }
+
+  /** Draw the live rings and newborn stars on top of the scene. */
+  function drawLiveEffects() {
+    const now = performance.now()
+    const L = state.live
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+
+    // A soft, lingering aura on any cloud touched in the last few seconds:
+    // the ring is brief, but the cluster itself keeps a "hot" edge so an
+    // active conversation is visible even between events.
+    for (const cluster of state.clusters) {
+      const last = cluster.lastLiveAt || 0
+      const heat = Math.max(0, 1 - (now - last) / 3200)
+      if (heat <= 0) continue
+      const pr = project(cluster.center)
+      const sprite = softSprite(cluster.color)
+      const d = 130 * pr.scale * (0.8 + heat * 0.5)
+      ctx.globalAlpha = heat * 0.16
+      ctx.drawImage(sprite, pr.x - d / 2, pr.y - d / 2, d, d)
+    }
+    ctx.globalAlpha = 1
+
+    for (let i = L.pulses.length - 1; i >= 0; i -= 1) {
+      const p = L.pulses[i]
+      const age = (now - p.born) / 1400
+      if (age >= 1) { L.pulses.splice(i, 1); continue }
+      const pr = project(p.cluster.center)
+      const baseR = 8 * pr.scale
+      const grow = p.kind === 'write' ? age : 1 - age
+      const r = Math.max(2, baseR + grow * 40 * pr.scale)
+      ctx.beginPath()
+      ctx.arc(pr.x, pr.y, r, 0, Math.PI * 2)
+      ctx.strokeStyle = rgba(p.color, (1 - age) * 0.5)
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+    }
+    for (let i = L.newborns.length - 1; i >= 0; i -= 1) {
+      const s = L.newborns[i]
+      const age = (now - s.born) / 6000
+      if (age >= 1) { L.newborns.splice(i, 1); continue }
+      const pr = project(s.pos)
+      const twinkle = 0.75 + Math.sin(now * 0.004 + s.phase) * 0.25
+      const r = Math.max(0.8, (1.4 + (1 - age) * 1.6) * pr.scale * twinkle)
+      const sprite = softSprite([255, 255, 255])
+      const d = r * 7
+      ctx.globalAlpha = (1 - age) * 0.85
+      ctx.drawImage(sprite, pr.x - d / 2, pr.y - d / 2, d, d)
+      ctx.globalAlpha = 1
+      ctx.beginPath()
+      ctx.arc(pr.x, pr.y, r, 0, Math.PI * 2)
+      ctx.fillStyle = '#ffffff'
+      ctx.fill()
+    }
+    ctx.restore()
+    // Idle the activity dot shortly after the last event.
+    if (now - L.lastBurst > 1200) el.livePanel.dataset.active = 'false'
+  }
+
+  /** Fold an on-disk snapshot back in: drop ephemeral clouds now on disk. */
+  function refreshFromSnapshot() {
+    fetch('/memory-cloud/api/memories', { headers: { accept: 'application/json' } })
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(data => {
+        const ids = new Set((data.sessions || []).map(s => s.id))
+        for (const [id, cluster] of state.live.liveClusters) {
+          if (!ids.has(id)) continue
+          state.live.liveClusters.delete(id)
+          const ci = state.clusters.indexOf(cluster)
+          if (ci >= 0) state.clusters.splice(ci, 1)
+          // Remove its core from the flat hit-test list.
+          const si = state.stars.indexOf(cluster.core)
+          if (si >= 0) state.stars.splice(si, 1)
+        }
+        if (state.stats) {
+          state.stats.sessions = data.stats.sessions
+          state.stats.fragments = data.stats.fragments
+          buildStats(state.stats)
+          el.subtitle.textContent = state.isMobile
+            ? `${data.stats.sessions} 个会话 · ${data.stats.fragments} 颗记忆星 · 单指旋转 / 双指缩放`
+            : `${data.stats.sessions} 个会话记忆 · ${data.stats.fragments} 颗记忆星 · 拖拽以探索`
+        }
+      })
+      .catch(() => { /* transient; next tick retries */ })
   }
 
   const SKIN_KEY = 'dsh-memory-cloud:skin:v1'
@@ -632,7 +866,7 @@
     const q = state.query.trim().toLowerCase()
     if (q === '') return true
     if (cluster.session.title.toLowerCase().includes(q)) return true
-    if (cluster.session.workspaceLabel.toLowerCase().includes(q)) return true
+    if (cluster.session.workspaceLabel && cluster.session.workspaceLabel.toLowerCase().includes(q)) return true
     return (cluster.session.fragments || []).some(f => f.text.toLowerCase().includes(q))
   }
 
@@ -1206,6 +1440,7 @@
       drawRelationArcs()
       drawNebulaStars(projected)
     }
+    drawLiveEffects()
 
     // Captions only make sense once a cluster fills the view.
     if (lod >= 2) drawFragmentCaptions(lod)
@@ -1530,9 +1765,18 @@
       else if (window.parent !== window) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
     }
   })
+  el.liveToggle.addEventListener('click', () => {
+    const collapsed = el.livePanel.classList.toggle('collapsed')
+    el.liveToggle.textContent = collapsed ? '+' : '−'
+    el.liveToggle.setAttribute('aria-pressed', String(!collapsed))
+  })
+  el.liveFeed.innerHTML = '<div class="live-empty">等待对话记忆写入…</div>'
+  el.livePanel.dataset.connected = 'false'
   // The nebula is dark-only by design; no theme messages are exchanged.
   window.addEventListener('resize', resize)
   window.addEventListener('orientationchange', () => window.setTimeout(resize, 250))
+  // Periodically reconcile ephemeral live clouds with the on-disk snapshot.
+  window.setInterval(refreshFromSnapshot, 15000)
 
   // -------------------------------------------------------------------------
   // Boot
