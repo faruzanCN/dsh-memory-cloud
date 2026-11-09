@@ -22,6 +22,11 @@
     liveReads: document.getElementById('live-reads'),
     liveRate: document.getElementById('live-rate'),
     liveToggle: document.getElementById('live-toggle'),
+    menuToggle: document.getElementById('menu-toggle'),
+    menuBody: document.getElementById('menu-body'),
+    controlMenu: document.getElementById('control-menu'),
+    legendToggle: document.getElementById('legend-toggle'),
+    legendContent: document.getElementById('legend-content'),
     skinButtons: [...document.querySelectorAll('.skin-btn')],
     tooltip: document.getElementById('tooltip'),
     detail: document.getElementById('detail'),
@@ -47,6 +52,18 @@
       s ^= s << 13; s ^= s >>> 17; s ^= s << 5
       return ((s >>> 0) % 100000) / 100000
     }
+  }
+
+  /** Even sampling keeps both the oldest and newest entries when capped. */
+  function sampleEvenly(items, cap) {
+    if (items.length <= cap) return items
+    if (cap <= 0) return []
+    const out = []
+    for (let i = 0; i < cap; i += 1) {
+      const index = Math.round((i * (items.length - 1)) / Math.max(1, cap - 1))
+      out.push(items[index])
+    }
+    return out
   }
 
   const PALETTE = [
@@ -299,9 +316,9 @@
     return { segments, tips }
   }
 
-  /** Visual radius multiplier from memory weight: ~0.55x .. 1.75x. */
+  /** Visual radius multiplier from memory weight: ~0.45x .. 1.85x. */
   function clusterScale(weight) {
-    return 0.55 + weight * 1.2
+    return 0.45 + weight * 1.4
   }
 
   /**
@@ -404,6 +421,7 @@
     w: 0, h: 0, dpr: 1,
     time: 0,
     quality: 1,      // 1 = full crest sampling; 0.5 under sustained load
+    fieldRadius: 250, // grows with session count to keep visual density constant
     // --- live memory activity ---
     live: {
       connected: false,
@@ -427,16 +445,18 @@
 
   /**
    * Camera rig distance. Zoom is NOT applied here — `project()` multiplies by
-   * zoom as pure magnification. This only handles the mobile fit factor, which
-   * must stay constant so zooming behaves identically on every screen size.
+   * zoom as pure magnification. The rig tracks the field radius so a large
+   * history stays fully framed instead of collapsing into a bright centre.
    */
   function cameraDistance() {
-    if (!state.isMobile) return 900
-    // The cloud spans roughly ±300 world units. To fit it inside a viewport of
-    // `w` pixels the camera is pushed back on narrow screens.
+    // 900 is the baseline for a ~250-unit field; scale with the actual field
+    // radius so the on-screen density stays constant as sessions accumulate.
+    const base = 900 * (state.fieldRadius / 250)
+    if (!state.isMobile) return base
+    // On a narrow screen push back further so the wider field still fits.
     const usable = Math.max(240, state.w - 24)
     const fit = Math.max(1.6, Math.min(3.4, 1650 / usable))
-    return 900 * fit
+    return base * fit
   }
 
   // -------------------------------------------------------------------------
@@ -457,16 +477,29 @@
     const maxEvents = Math.max(1, ...sessions.map(s => s.counts?.events || 0))
     // A log-scale weight keeps one huge session from dwarfing everything else
     // while still making a 560-memory cloud clearly larger than a 3-memory one.
+    // ratio is 0..1 across the population; keep the floor low so small
+    // memories really are small (the earlier 0.35 floor flattened the range).
     const memoryWeight = s => {
       const raw = fullCount(s)
       const ratio = Math.log(raw) / Math.log(maxMemories)
-      return Math.max(0.12, Math.min(1, 0.35 + 0.65 * ratio))
+      return Math.max(0.06, Math.min(1, 0.10 + 0.90 * ratio))
     }
+    // The field must grow with the population. A fixed radius made 141
+    // sessions occupy the same volume as 15, so every label and star piled
+    // into the centre. Area grows linearly with N (radius ~ sqrt(N)), which
+    // keeps the number of clusters per unit area — the visual density — flat.
+    const N = Math.max(1, sessions.length)
+    const fieldRadius = 250 * Math.sqrt(N / 15)
+    state.fieldRadius = fieldRadius
+
+    // Global star budget. Each cluster contributes a capped number of visible
+    // stars, so a big history never becomes an undifferentiated glitter blob.
+    const STAR_BUDGET = 900
+    const perClusterStars = Math.max(3, Math.floor(STAR_BUDGET / N))
+
     // Spread cluster centers on a fibonacci sphere so the nebula reads as a
     // galaxy, with radius scaled gently by activity (busier Sessions drift out).
-    // On a narrow screen shrink the whole cloud so rotation rarely clips a
-    // cluster at the viewport edge.
-    const R = state.isMobile ? 205 : 250
+    const R = fieldRadius * (state.isMobile ? 0.82 : 1)
     state.clusters = sessions.map((session, i) => {
       const rand = rng(hash(session.id))
       const y = 1 - (i / Math.max(1, sessions.length - 1)) * 2
@@ -501,9 +534,12 @@
 
       // Young stars embedded *inside* the gas: pick a random condensation and
       // scatter around it, so the stars do not form a ring around a nucleus.
-      fragments.forEach((fragment, fi) => {
+      // Sample evenly into the per-cluster budget so the whole field keeps a
+      // consistent star density regardless of how much history exists.
+      const shownFragments = sampleEvenly(fragments, perClusterStars)
+      shownFragments.forEach(fragment => {
         const lobe = cloud.lobeCenters[Math.floor(rand() * cloud.lobeCenters.length)] || center
-        const spread = 8 + rand() * 20
+        const spread = (8 + rand() * 20) * cluster.scale
         const star = {
           kind: 'star', cluster, fragment, isClusterCore: false,
           pos: [
@@ -518,8 +554,9 @@
         cluster.stars.push(star)
         state.stars.push(star)
       })
-      // Bright young stars scale with how much this session actually holds.
-      const brightCount = 1 + Math.round(weight * 3)
+      // Bright young stars scale with how much this session actually holds,
+      // but never exceed the budget for tiny populations.
+      const brightCount = Math.min(perClusterStars, 1 + Math.round(weight * 3))
       for (let s = 0; s < brightCount; s += 1) {
         const lobe = cloud.lobeCenters[Math.floor(rand() * cloud.lobeCenters.length)] || center
         state.stars.push({
@@ -529,15 +566,15 @@
         })
       }
       // Fine dust speckles threaded through the gas, offset along filaments.
-      const dustPerFilament = 2 + Math.round(weight * 3)
+      const dustPerFilament = Math.max(0, Math.min(3, Math.floor(perClusterStars / 3)))
       cloud.filaments.forEach(([a, b, c]) => {
         for (let d = 0; d < dustPerFilament; d += 1) {
           const t = (d + rand()) / dustPerFilament
           const u2 = 1 - t
           const p = [
-            u2 * u2 * a[0] + 2 * u2 * t * b[0] + t * t * c[0] + (rand() - 0.5) * 12,
-            u2 * u2 * a[1] + 2 * u2 * t * b[1] + t * t * c[1] + (rand() - 0.5) * 9,
-            u2 * u2 * a[2] + 2 * u2 * t * b[2] + t * t * c[2] + (rand() - 0.5) * 12,
+            u2 * u2 * a[0] + 2 * u2 * t * b[0] + t * t * c[0] + (rand() - 0.5) * 12 * cluster.scale,
+            u2 * u2 * a[1] + 2 * u2 * t * b[1] + t * t * c[1] + (rand() - 0.5) * 9 * cluster.scale,
+            u2 * u2 * a[2] + 2 * u2 * t * b[2] + t * t * c[2] + (rand() - 0.5) * 12 * cluster.scale,
           ]
           state.stars.push({ kind: 'dust', cluster, fragment: null, isClusterCore: false, pos: p, size: 0.4 + rand() * 0.8, phase: rand() * Math.PI * 2, color })
         }
@@ -1151,10 +1188,11 @@
   function drawBridges(bridges) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
+    const fog = Math.max(0.3, Math.min(1, 30 / Math.max(30, state.clusters.length)))
     for (const b of bridges) {
       const p = project(b.pos)
       const d = b.size * p.scale
-      ctx.globalAlpha = b.alpha
+      ctx.globalAlpha = b.alpha * fog
       ctx.drawImage(softSprite(b.color), p.x - d / 2, p.y - d / 2, d, d)
     }
     ctx.globalAlpha = 1
@@ -1190,8 +1228,11 @@
       // A broad, axis-stretched soft body: pre-rendered sprite, no rim.
       // Its size follows the session's real memory volume.
       const sizeScale = cluster.scale || 1
+      // With many clusters the gases overlap; scale opacity down so the field
+      // stays a nebula instead of an opaque patchwork quilt.
+      const fog = Math.max(0.42, Math.min(1, 24 / Math.max(24, state.clusters.length)))
       ctx.save()
-      ctx.globalAlpha = 0.34 * alpha
+      ctx.globalAlpha = 0.34 * alpha * fog
       const bodySprite = softSprite(cluster.color)
       const bw = 150 * c0.scale * sizeScale, bh = 78 * c0.scale * sizeScale
       ctx.translate(c0.x, c0.y)
@@ -1210,7 +1251,7 @@
         const w = Math.max(6, puff.r * p.scale * 3.4)
         const h = w * puff.squash
         ctx.save()
-        ctx.globalAlpha = (0.075 + puff.alpha * 1.1) * alpha
+        ctx.globalAlpha = (0.075 + puff.alpha * 1.1) * alpha * fog
         ctx.translate(p.x, p.y)
         ctx.rotate(puff.angle)
         ctx.drawImage(softSprite(tint), -w / 2, -h / 2, w, h)
@@ -1588,61 +1629,86 @@
 
     // Cluster labels. Higher bands show more: title, then counts, then the
     // dominant topics, so zooming literally reveals more of the memory.
+    //
+    // With a large history, drawing every title turns the centre into an
+    // unreadable pile. Labels are therefore: (1) capped by a screen-area
+    // budget, (2) prioritised by memory size and depth, (3) placed with
+    // rectangle collision rejection, and (4) reduced to the title only once
+    // the population is large — the detail rows come back when you zoom in.
     if (state.zoom > 0.75) {
       ctx.save()
       const baseSize = state.isMobile ? 10 : 11
       ctx.textBaseline = 'middle'
-      let drawn = 0
-      for (const cluster of state.clusters) {
-        if (!matches(cluster)) continue
-        // At deep zoom only the focused cluster is labelled; the rest are off
-        // in the surrounding fog and would only clutter the close-up.
-        if (lod >= 2 && cluster !== state.focus) continue
-        if (state.isMobile && lod < 2 && drawn >= 8) break
-        const pr = project(cluster.center)
-        if (lod < 2 && pr.scale < (state.isMobile ? 0.30 : 0.55)) continue
-        drawn += 1
+      const N = state.clusters.length
+      const crowded = N > 30
+      // ~1 label per 9000 px² of viewport, clamped to a sane range.
+      const areaBudget = Math.max(6, Math.min(26, Math.round((state.w * state.h) / 9000)))
+      const maxLabels = lod >= 2 ? 1 : areaBudget
+      // Panel / toolbar margins that labels must stay clear of.
+      const safeTop = 62, safeBottom = state.h - (state.isMobile ? 92 : 74)
+      const safeLeft = state.isMobile ? 8 : 18
+      const safeRight = state.w - (state.isMobile ? 8 : 18)
 
-        const trunc = lod >= 2 ? 40 : state.isMobile ? 14 : 22
-        const title = cluster.session.title
+      const placed = []
+      // Prioritise larger memories and nearer clusters, then place greedily.
+      const candidates = state.clusters
+        .filter(c => matches(c))
+        .filter(c => !(lod >= 2 && c !== state.focus))
+        .map(c => ({ c, pr: project(c.center) }))
+        .filter(({ pr }) => pr.x > -40 && pr.x < state.w + 40 && pr.y > -40 && pr.y < state.h + 40)
+        .sort((a, b) => (b.c.weight - a.c.weight) || (a.pr.z - b.pr.z))
+
+      for (const { c, pr } of candidates) {
+        if (placed.length >= maxLabels) break
+        const trunc = lod >= 2 ? 40 : (crowded ? 12 : state.isMobile ? 14 : 22)
+        const title = c.session.title
         const label = title.length > trunc ? `${title.slice(0, trunc)}…` : title
         const size = lod >= 2 ? baseSize + 3 : baseSize
         ctx.font = `${lod >= 2 ? 600 : 400} ${size}px Inter, "PingFang SC", system-ui, sans-serif`
-        // Capped so a very deep zoom does not push the title off-screen.
+        const x = pr.x + 6
         const ly = pr.y + Math.min(120, 30 * pr.scale) + 8
+        const w = ctx.measureText(label).width
+        const rows = (!crowded && lod >= 1) || lod >= 2 ? 2 : 1
+        const h = size + rows * (baseSize + 3)
+        const rect = { x: x - 3, y: ly - size / 2 - 3, w: w + 6, h: h + 6 }
+        if (rect.x < safeLeft || rect.x + rect.w > safeRight) continue
+        if (rect.y < safeTop || rect.y + rect.h > safeBottom) continue
+        if (placed.some(r => overlaps(r, rect))) continue
+        placed.push(rect)
+
         ctx.globalAlpha = 0.88
         ctx.lineWidth = 3
         ctx.strokeStyle = 'rgba(7,10,28,0.92)'
-        ctx.strokeText(label, pr.x + 6, ly)
+        ctx.strokeText(label, x, ly)
         ctx.fillStyle = '#d6deff'
-        ctx.fillText(label, pr.x + 6, ly)
+        ctx.fillText(label, x, ly)
 
-        // Band 1+: activity counts beside the title.
-        if (lod >= 1) {
-          const c = cluster.session.counts
-          const meta = `${c.fragments} 条记忆 · ${c.user}/${c.assistant} 对话 · ${c.tools} 工具`
+        // Counts / topics are suppressed in a crowded field; zoom in (or a
+        // small history) brings them back.
+        const showMeta = lod >= 1 && !crowded
+        if (showMeta) {
+          const cc = c.session.counts
+          const meta = `${cc.fragments} 条记忆 · ${cc.user}/${cc.assistant} 对话 · ${cc.tools} 工具`
           ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
           ctx.globalAlpha = 0.7
-          ctx.strokeText(meta, pr.x + 6, ly + size + 4)
+          ctx.strokeText(meta, x, ly + size + 4)
           ctx.fillStyle = '#9db0e6'
-          ctx.fillText(meta, pr.x + 6, ly + size + 4)
+          ctx.fillText(meta, x, ly + size + 4)
         }
-        // Band 2+: the topics that put this session where it is.
-        if (lod >= 2 && (cluster.session.topics || []).length > 0) {
-          const words = cluster.session.topics.slice(0, 6).map(t => t.word).join(' · ')
+        if (lod >= 2 && (c.session.topics || []).length > 0) {
+          const words = c.session.topics.slice(0, 6).map(t => t.word).join(' · ')
           ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
           ctx.globalAlpha = 0.6
-          ctx.strokeText(words, pr.x + 6, ly + size * 2 + 8)
+          ctx.strokeText(words, x, ly + size * 2 + 8)
           ctx.fillStyle = '#8fa6d8'
-          ctx.fillText(words, pr.x + 6, ly + size * 2 + 8)
+          ctx.fillText(words, x, ly + size * 2 + 8)
         }
-        // Band 3: a footer telling the reader the text is now complete.
         if (lod >= 3) {
-          const status = cluster.hasFullDetail ? '已载入完整记忆' : '正在载入完整记忆…'
+          const status = c.hasFullDetail ? '已载入完整记忆' : '正在载入完整记忆…'
           ctx.font = `400 ${baseSize - 1}px Inter, system-ui, sans-serif`
           ctx.globalAlpha = 0.55
-          ctx.fillStyle = cluster.hasFullDetail ? '#8fd6b4' : '#d8c98a'
-          ctx.fillText(status, pr.x + 6, ly + size * 3 + 12)
+          ctx.fillStyle = c.hasFullDetail ? '#8fd6b4' : '#d8c98a'
+          ctx.fillText(status, x, ly + size * 3 + 12)
         }
       }
       ctx.restore()
@@ -1900,11 +1966,44 @@
       if (embedded) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
     } catch (_) {}
   })
+  // -------------------------------------------------------------------------
+  // Collapsible UI. All interactive controls are inside the menu; the top-right
+  // corner is left completely free of hit targets because the dsh client draws
+  // its own window chrome there.
+  // -------------------------------------------------------------------------
+  function setMenuOpen(open) {
+    el.menuBody.hidden = !open
+    el.menuToggle.setAttribute('aria-expanded', String(open))
+  }
+  el.menuToggle.addEventListener('click', () => {
+    setMenuOpen(el.menuBody.hidden)
+  })
+  // Click outside the menu closes it.
+  document.addEventListener('pointerdown', e => {
+    if (el.menuBody.hidden) return
+    if (el.controlMenu.contains(e.target)) return
+    setMenuOpen(false)
+  })
+  el.legendToggle.addEventListener('click', () => {
+    const collapsed = el.legendContent.hidden
+    el.legendContent.hidden = !collapsed
+    el.legendToggle.textContent = collapsed ? '−' : '+'
+    el.legendToggle.setAttribute('aria-expanded', String(collapsed))
+  })
+
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      if (!el.detail.hidden) closeDetail()
-      else if (window.parent !== window) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
+    if (e.key !== 'Escape') return
+    // Close the innermost layer first; never close the whole page while a
+    // panel is still open.
+    if (!el.menuBody.hidden) { setMenuOpen(false); return }
+    if (!el.detail.hidden) { closeDetail(); return }
+    if (!el.legendContent.hidden && window.innerWidth <= 820) {
+      el.legendContent.hidden = true
+      el.legendToggle.textContent = '+'
+      el.legendToggle.setAttribute('aria-expanded', 'false')
+      return
     }
+    if (window.parent !== window) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
   })
   el.liveToggle.addEventListener('click', () => {
     const collapsed = el.livePanel.classList.toggle('collapsed')

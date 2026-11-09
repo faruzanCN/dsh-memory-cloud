@@ -46,7 +46,61 @@ body {
 }
 .brand-text h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: 0.5px; }
 .brand-text p { margin: 2px 0 0; font-size: 11.5px; color: var(--mc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46vw; }
-.topbar-actions { display: flex; align-items: center; gap: 8px; pointer-events: auto; }
+/* Keep the trigger clear of the top-right corner: the dsh client draws its
+   window controls over roughly the rightmost 240px of the title bar. */
+.topbar-actions {
+  display: flex; align-items: center; gap: 8px; pointer-events: auto;
+  margin-right: 252px; /* clear the dsh client's top-right window controls */
+}
+
+/* ---------------------------------------------------------------------------
+   Collapsible control menu
+   The trigger sits in the middle-right of the toolbar, NOT in the top-right
+   corner: the dsh client overlays that corner and would swallow clicks.
+   The panel opens to the LEFT of the trigger for the same reason.
+   --------------------------------------------------------------------------- */
+.control-menu { position: relative; }
+.menu-toggle {
+  display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 11px;
+  border-radius: 9px; border: 1px solid var(--mc-line); background: var(--mc-panel);
+  color: var(--mc-fg); font: inherit; font-size: 12px; font-weight: 600;
+  cursor: pointer; backdrop-filter: blur(12px); white-space: nowrap;
+}
+.menu-toggle:hover { border-color: var(--mc-accent); }
+.menu-toggle[aria-expanded="true"] { border-color: rgba(138, 160, 255, .6); background: rgba(70, 85, 165, .45); }
+.menu-glyph { font-size: 14px; line-height: 1; opacity: .85; }
+
+.menu-body {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 9;
+  width: min(300px, 82vw);
+  background: rgba(14, 19, 44, .96); border: 1px solid var(--mc-line);
+  border-radius: 12px; padding: 10px; backdrop-filter: blur(18px);
+  box-shadow: 0 14px 40px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: min(70vh, 560px); overflow-y: auto; scrollbar-width: none;
+}
+.menu-body::-webkit-scrollbar { display: none; }
+.menu-body[hidden] { display: none; }
+.menu-heading { margin: 0 0 6px; font-size: 10px; font-weight: 650; letter-spacing: .6px; color: var(--mc-muted); text-transform: uppercase; }
+.menu-section { display: flex; flex-direction: column; gap: 8px; }
+.menu-section .skin-switch { width: 100%; }
+.menu-section .skin-btn { flex: 1 1 0; justify-content: center; }
+.menu-section .search { width: 100%; }
+.menu-section .search input { width: 100%; min-width: 0; }
+
+.menu-group { border-top: 1px solid var(--mc-line); padding-top: 7px; }
+.menu-summary {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11.5px; font-weight: 600; color: var(--mc-muted);
+  cursor: pointer; list-style: none; padding: 3px 2px; user-select: none;
+}
+.menu-summary::-webkit-details-marker { display: none; }
+.menu-summary:hover { color: var(--mc-fg); }
+.menu-chevron { transition: transform .18s; font-size: 10px; }
+.menu-group[open] .menu-chevron { transform: rotate(180deg); }
+.menu-group-body { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 2px; }
+.menu-about-body p { margin: 0; font-size: 10.5px; line-height: 1.6; color: var(--mc-muted); }
+
 .search {
   display: flex; align-items: center; gap: 7px;
   background: var(--mc-panel); border: 1px solid var(--mc-line); border-radius: 9px;
@@ -56,15 +110,15 @@ body {
 .search input { border: 0; background: transparent; color: var(--mc-fg); font: inherit; font-size: 12.5px; outline: none; width: 190px; }
 .search input::placeholder { color: var(--mc-muted); }
 .chip {
-  height: 34px; min-width: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer;
+  height: 32px; min-width: 32px; padding: 0 11px; border-radius: 8px; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   background: var(--mc-panel); border: 1px solid var(--mc-line); color: var(--mc-muted);
-  font: inherit; font-size: 12px; font-weight: 550; white-space: nowrap; backdrop-filter: blur(12px);
+  font: inherit; font-size: 11.5px; font-weight: 550; white-space: nowrap; backdrop-filter: blur(12px);
   transition: color .15s, border-color .15s, background .15s;
 }
 .chip:hover { color: var(--mc-fg); border-color: var(--mc-accent); }
 .chip.active { color: #fff; border-color: rgba(138, 160, 255, .6); background: rgba(90, 110, 220, .42); }
-.chip.close { width: 34px; padding: 0; font-size: 14px; }
+.chip.close { width: 32px; padding: 0; font-size: 13px; }
 /* Author `display` on .chip overrides the UA [hidden] rule, so state it here. */
 .chip[hidden] { display: none; }
 .chip-glyph { font-size: 15px; line-height: 1; }
@@ -97,43 +151,56 @@ body {
 .skin-btn.active { color: #fff; background: rgba(90, 110, 220, .5); }
 .skin-ico { font-size: 13px; line-height: 1; }
 
-/* Relation legend: what the links between clusters mean. */
+/* Legend box: one collapsible panel on the LEFT (never the top-right corner
+   the dsh client overlays), holding both workspace and relation legends. */
+.legend-box {
+  position: fixed; left: calc(20px + var(--mc-safe-l)); top: calc(74px + var(--mc-safe-t)); z-index: 4;
+  width: 216px; max-width: 46vw;
+  background: var(--mc-panel); border: 1px solid var(--mc-line); border-radius: 10px;
+  backdrop-filter: blur(12px); overflow: hidden;
+}
+.legend-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 10px; border-bottom: 1px solid var(--mc-line);
+}
+.legend-head-title { font-size: 11px; font-weight: 650; color: var(--mc-fg); letter-spacing: .4px; }
+.legend-toggle {
+  width: 20px; height: 20px; border: 1px solid var(--mc-line); border-radius: 5px;
+  background: transparent; color: var(--mc-muted); cursor: pointer; font-size: 12px; line-height: 1;
+}
+.legend-toggle:hover { color: var(--mc-fg); }
+.legend-content { padding: 8px 9px 9px; max-height: 58vh; overflow-y: auto; scrollbar-width: none; }
+.legend-content::-webkit-scrollbar { display: none; }
+.legend-content[hidden] { display: none; }
+
+.legend { display: flex; flex-direction: column; gap: 5px; }
+.legend-item {
+  display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--mc-muted);
+  border: 1px solid var(--mc-line); border-radius: 7px;
+  padding: 4px 8px; cursor: pointer;
+}
+.legend-item:hover { color: var(--mc-fg); }
+.legend-item .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; box-shadow: 0 0 8px currentColor; }
+.legend-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.legend-item .count { margin-left: auto; color: var(--mc-muted); opacity: .8; font-variant-numeric: tabular-nums; }
+.legend-item.dim { opacity: .38; }
+
+/* Relation legend, now a normal block inside the collapsible legend box. */
 .relation-key {
-  position: fixed; right: calc(20px + var(--mc-safe-r)); top: calc(74px + var(--mc-safe-t)); z-index: 4;
   display: flex; flex-direction: column; gap: 5px;
-  background: var(--mc-panel); border: 1px solid var(--mc-line); border-radius: 9px;
-  padding: 9px 11px; backdrop-filter: blur(10px); pointer-events: none;
-  max-width: 210px;
+  margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--mc-line);
+  pointer-events: none;
 }
 .relation-key h3 { margin: 0 0 2px; font-size: 10.5px; font-weight: 650; color: var(--mc-muted); letter-spacing: .4px; }
 .relation-key .rk-row { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--mc-muted); }
 .relation-key .rk-line { width: 26px; height: 0; border-top: 2px solid var(--mc-accent); flex: 0 0 auto; }
 .relation-key .rk-line.fork { border-top: 2px dashed #ffd591; }
-.relation-key .rk-line.topic { border-top-width: 2px; }
-.relation-key .rk-line.workspace { border-top-width: 3px; }
+.relation-key .rk-line.topic { border-top-width: 2px; border-top-color: #8aa0ff; }
+.relation-key .rk-line.workspace { border-top-width: 3px; border-top-color: #7de0c0; }
 .relation-key .rk-line.flow { border-top: 2px solid rgba(180, 215, 255, .95); box-shadow: 0 0 5px rgba(150, 205, 255, .7); }
 .relation-key .rk-line.dim { border-top: 1px solid rgba(140, 170, 235, .38); }
 .relation-key .rk-flow { margin-top: 3px; }
-.relation-key .rk-line.topic { border-top-color: #8aa0ff; }
-.relation-key .rk-line.workspace { border-top-color: #7de0c0; }
 .relation-key .rk-count { margin-top: 3px; font-size: 10px; color: var(--mc-fg); font-variant-numeric: tabular-nums; }
-
-.legend {
-  position: fixed; left: calc(20px + var(--mc-safe-l)); top: calc(74px + var(--mc-safe-t)); z-index: 4;
-  display: flex; flex-direction: column; gap: 6px; max-height: 56vh; overflow: auto;
-  pointer-events: auto; scrollbar-width: none;
-}
-.legend::-webkit-scrollbar { display: none; }
-.legend-item {
-  display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--mc-muted);
-  background: var(--mc-panel); border: 1px solid var(--mc-line); border-radius: 7px;
-  padding: 4px 9px 4px 7px; backdrop-filter: blur(10px); cursor: pointer; max-width: 260px;
-}
-.legend-item:hover { color: var(--mc-fg); }
-.legend-item .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; box-shadow: 0 0 8px currentColor; }
-.legend-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.legend-item .count { margin-left: auto; color: var(--mc-muted); opacity: .8; font-variant-numeric: tabular-nums; }
-.legend-item.dim { opacity: .38; }
 
 /* ---------------------------------------------------------------------------
    Live memory activity panel
@@ -212,12 +279,8 @@ body {
 .stat b { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10.5px; color: var(--mc-muted); letter-spacing: .3px; }
 
-.hint {
-  position: fixed; right: calc(20px + var(--mc-safe-r)); bottom: calc(20px + var(--mc-safe-b)); z-index: 4;
-  font-size: 11px; color: var(--mc-muted); background: var(--mc-panel);
-  border: 1px solid var(--mc-line); border-radius: 8px; padding: 7px 11px; backdrop-filter: blur(10px);
-  pointer-events: none;
-}
+/* Hint text now lives inside the collapsible menu; no fixed corner widget. */
+.hint { font-size: 11px; color: var(--mc-muted); line-height: 1.6; }
 
 .tooltip {
   position: fixed; z-index: 8; pointer-events: none; max-width: 300px;
@@ -270,36 +333,27 @@ body {
   .brand-mark { width: 26px; height: 26px; border-radius: 8px; }
   .brand-text h1 { font-size: 15px; }
   .brand-text p { font-size: 10.5px; max-width: 40vw; }
-  .topbar-actions { gap: 6px; }
-  .lod-badge { height: 28px; padding: 0 8px; font-size: 10px; }
+  .topbar-actions { gap: 6px; margin-right: 10px; }
+  .menu-toggle { height: 32px; padding: 0 9px; }
+  .menu-toggle-label { display: none; }
+  .menu-body { width: min(280px, 86vw); right: 0; }
+  .lod-badge { height: 24px; padding: 0 7px; font-size: 10px; }
   .skin-switch { height: 36px; padding: 3px; }
-  .skin-btn { height: 28px; padding: 0 8px; font-size: 0; gap: 0; }
-  .skin-ico { font-size: 15px; }
-  .skin-txt { display: none; }
+  .skin-btn { height: 28px; padding: 0 8px; }
+  .skin-txt { display: inline; }
   .search { height: 36px; padding: 0 9px; }
-  .search input { width: 92px; font-size: 16px; /* 16px avoids iOS auto-zoom on focus */ }
-  .chip { height: 36px; min-width: 36px; padding: 0 9px; }
-  .chip-label { display: none; }
-  .chip.close { width: 36px; }
+  .search input { width: 100%; font-size: 16px; /* 16px avoids iOS auto-zoom on focus */ }
+  .chip { height: 34px; min-width: 34px; padding: 0 9px; }
+  .chip-label { display: inline; }
+  .chip.close { width: 34px; }
 
-  /* On a phone the relation key becomes a compact one-line chip under legend. */
-  .relation-key {
-    right: auto; left: calc(12px + var(--mc-safe-l));
-    top: calc(104px + var(--mc-safe-t)); max-width: none;
-    flex-direction: row; align-items: center; gap: 8px; padding: 6px 10px;
-  }
+  /* Legend box: compact, collapsible, left aligned under the toolbar. */
+  .legend-box { left: calc(12px + var(--mc-safe-l)); top: calc(58px + var(--mc-safe-t)); width: min(200px, 54vw); }
+  .legend-content { max-height: 40vh; padding: 6px 7px 7px; }
+  .legend-item { font-size: 10.5px; padding: 4px 7px; }
+  .relation-key { margin-top: 7px; padding-top: 7px; }
   .relation-key h3, .relation-key .rk-row { display: none; }
-  .relation-key .rk-count { margin: 0; font-size: 10px; }
-
-  /* Legend becomes a single horizontal, swipeable row under the toolbar. */
-  .legend {
-    left: calc(12px + var(--mc-safe-l)); right: calc(12px + var(--mc-safe-r));
-    top: calc(60px + var(--mc-safe-t)); max-height: none;
-    flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden;
-    padding-bottom: 2px;
-  }
-  .legend-item { flex: 0 0 auto; max-width: 190px; font-size: 11px; padding: 6px 10px; }
-  .legend-item .name { max-width: 130px; }
+  .relation-key .rk-count { margin: 0; font-size: 9.5px; }
 
   /* Stats strip: one compact row, full width, above the safe bottom. */
   .stats {
@@ -315,7 +369,7 @@ body {
   .stat b { font-size: 13px; }
   .stat span { font-size: 9px; }
 
-  .hint { display: none; }
+  .menu-about-body { display: none; }
 
   /* Detail becomes a bottom sheet occupying the lower ~62% of the screen. */
   .detail {
@@ -340,12 +394,8 @@ body {
   .brand-text p { display: none; }
   .brand-text h1 { font-size: 14px; }
   .brand-mark { width: 24px; height: 24px; }
-  /* Four icon buttons + search + skin switch is too crowded at 390px: drop
-     the reset control (the same gesture is a double-tap-free pinch back). */
-  #reset { display: none; }
-  .search { flex: 1 1 auto; min-width: 0; }
-  .search input { width: 100%; min-width: 0; }
-  .skin-btn { padding: 0 7px; }
+  .legend-box { width: min(180px, 50vw); }
+  .menu-body { width: min(260px, 88vw); }
   .stat b { font-size: 12px; }
   .stat span { font-size: 8.5px; }
   .stats { gap: 3px 9px; }
