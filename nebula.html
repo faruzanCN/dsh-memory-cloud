@@ -21,44 +21,24 @@
         <p id="subtitle">正在读取 DSH 会话记忆…</p>
       </div>
     </div>
-    <!-- All controls live in ONE collapsible menu, placed away from the
-         top-right corner (the dsh client overlays that corner). -->
-    <div class="topbar-actions">
-      <div id="control-menu" class="control-menu">
-        <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="menu-body">
-          <span class="menu-glyph" aria-hidden="true">☰</span>
-          <span class="menu-toggle-label">菜单</span>
-          <span id="lod-badge" class="lod-badge" data-lod="0" title="当前细节等级">全景</span>
-        </button>
-        <div id="menu-body" class="menu-body" hidden>
-          <section class="menu-section">
-            <h3 class="menu-heading">视图</h3>
-            <div class="skin-switch" role="group" aria-label="皮肤切换">
-              <button id="skin-nebula" class="skin-btn active" type="button" data-skin="nebula" aria-pressed="true"><span class="skin-ico">✦</span><span class="skin-txt">星云</span></button>
-              <button id="skin-neuron" class="skin-btn" type="button" data-skin="neuron" aria-pressed="false"><span class="skin-ico">⌁</span><span class="skin-txt">神经元</span></button>
-            </div>
-            <label class="search">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L14 14"/></svg>
-              <input id="search" type="search" placeholder="搜索记忆 / 标题 / 工作区" autocomplete="off" spellcheck="false">
-            </label>
-          </section>
-          <details class="menu-group" id="menu-advanced">
-            <summary class="menu-summary">视角与操作 <span class="menu-chevron" aria-hidden="true">▾</span></summary>
-            <div class="menu-group-body">
-              <button id="autorotate" class="chip active" type="button" aria-pressed="true" title="自动旋转" aria-label="自动旋转"><span class="chip-glyph">⟳</span><span class="chip-label">自动旋转</span></button>
-              <button id="reset" class="chip" type="button" title="复位视角" aria-label="复位视角"><span class="chip-glyph">⌖</span><span class="chip-label">复位视角</span></button>
-              <button id="close" class="chip close" type="button" title="关闭" aria-label="关闭">✕</button>
-            </div>
-          </details>
-          <details class="menu-group" id="menu-about">
-            <summary class="menu-summary">说明 <span class="menu-chevron" aria-hidden="true">▾</span></summary>
-            <div class="menu-group-body menu-about-body">
-              <p id="hint">拖拽旋转 · 滚轮缩放 · 悬停查看 · 点击星团展开记忆</p>
-            </div>
-          </details>
-        </div>
+    <!-- One flat, always-visible toolbar on the right. No nested collapsibles:
+         everything (including Close) is directly reachable. The right edge
+         keeps a gap because the dsh client overlays its window controls there. -->
+    <div class="topbar-actions" id="control-menu">
+      <span id="lod-badge" class="lod-badge" data-lod="0" title="当前细节等级">全景</span>
+      <div class="skin-switch" role="group" aria-label="皮肤切换">
+        <button id="skin-nebula" class="skin-btn active" type="button" data-skin="nebula" aria-pressed="true"><span class="skin-ico">✦</span><span class="skin-txt">星云</span></button>
+        <button id="skin-neuron" class="skin-btn" type="button" data-skin="neuron" aria-pressed="false"><span class="skin-ico">⌁</span><span class="skin-txt">神经元</span></button>
       </div>
+      <label class="search">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L14 14"/></svg>
+        <input id="search" type="search" placeholder="搜索记忆 / 标题 / 工作区" autocomplete="off" spellcheck="false">
+      </label>
+      <button id="autorotate" class="chip active" type="button" aria-pressed="true" title="自动旋转" aria-label="自动旋转"><span class="chip-glyph">⟳</span><span class="chip-label">自动旋转</span></button>
+      <button id="reset" class="chip" type="button" title="复位视角" aria-label="复位视角"><span class="chip-glyph">⌖</span><span class="chip-label">复位视角</span></button>
+      <button id="close" class="chip close" type="button" title="关闭" aria-label="关闭"><span class="chip-glyph">✕</span><span class="chip-label">关闭</span></button>
     </div>
+    <p id="hint" class="sr-only">拖拽旋转 · 滚轮缩放 · 悬停查看 · 点击星团展开记忆</p>
   </header>
 
   <aside id="legend-box" class="legend-box" aria-label="工作区与关联图例">

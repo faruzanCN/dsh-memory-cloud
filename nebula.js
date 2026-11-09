@@ -22,9 +22,6 @@
     liveReads: document.getElementById('live-reads'),
     liveRate: document.getElementById('live-rate'),
     liveToggle: document.getElementById('live-toggle'),
-    menuToggle: document.getElementById('menu-toggle'),
-    menuBody: document.getElementById('menu-body'),
-    controlMenu: document.getElementById('control-menu'),
     legendToggle: document.getElementById('legend-toggle'),
     legendContent: document.getElementById('legend-content'),
     skinButtons: [...document.querySelectorAll('.skin-btn')],
@@ -218,11 +215,6 @@
     ctx.globalAlpha = 1
     ctx.lineWidth = 0.9
     ctx.stroke()
-  }
-
-  /** Phase of the continuous current for one link, shared by both skins. */
-  function signalPhase(seed) {
-    return ((state.time / SIGNAL_CYCLE) + (seed % 1000) / 1000) % 1
   }
 
   /**
@@ -1044,25 +1036,66 @@
    * projecting onto the chord at exactly t, so the travelling gradient stays
    * aligned with the drawn line.
    */
+  /**
+   * Screen-space path between two clusters, shaped like a neural axon / air
+   * discharge rather than a smooth bow. The offset from the chord is a sum of
+   * a few low-amplitude harmonics: gentle enough that the gradient stays
+   * aligned with the drawn line (every point at parameter t still projects
+   * onto the chord at t), but irregular enough to read as an organic spark.
+   * Short side branches are returned separately as decorative offshoots.
+   */
   function arcPoints(pa, pb, seed, segments) {
     const dx = pb.x - pa.x, dy = pb.y - pa.y
     const len = Math.hypot(dx, dy) || 1
     const nx = -dy / len, ny = dx / len
     const rand = rng(seed)
     const sign = rand() < 0.5 ? -1 : 1
-    const bowAmp = Math.min(26, len * 0.09) * sign
-    const sAmp = Math.min(9, len * 0.03) * (rand() < 0.5 ? -1 : 1)
-    const sPhase = rand() * Math.PI * 2
+    const bowAmp = Math.min(20, len * 0.075) * sign
+    // Two incommensurate harmonics produce a wandering, lightning-like trace.
+    const k1 = 1.7 + rand() * 1.1
+    const k2 = 4.3 + rand() * 2.4
+    const a1 = Math.min(14, len * 0.045)
+    const a2 = Math.min(7, len * 0.022)
+    const p1 = rand() * Math.PI * 2
+    const p2 = rand() * Math.PI * 2
     const pts = [{ x: pa.x, y: pa.y }]
     for (let i = 1; i < segments; i += 1) {
       const t = i / segments
-      // Envelope pins both ends to the clusters, so links always meet their gas.
-      const env = Math.sin(t * Math.PI)
-      const off = env * (bowAmp + sAmp * Math.sin(t * Math.PI * 2 + sPhase))
+      const env = Math.sin(t * Math.PI) // pin both ends to the clusters
+      const off = env * (
+        bowAmp +
+        a1 * Math.sin(t * Math.PI * 2 * k1 + p1) +
+        a2 * Math.sin(t * Math.PI * 2 * k2 + p2)
+      )
       pts.push({ x: pa.x + dx * t + nx * off, y: pa.y + dy * t + ny * off })
     }
     pts.push({ x: pb.x, y: pb.y })
     return pts
+  }
+
+  /** Short side branches off a path, for a neural/branching-discharge look. */
+  function arcBranches(pts, seed) {
+    const rand = rng(seed ^ 0x3c17)
+    const out = []
+    const count = 2 + Math.floor(rand() * 3)
+    for (let b = 0; b < count; b += 1) {
+      const i = 6 + Math.floor(rand() * Math.max(1, pts.length - 12))
+      const p = pts[i] || pts[0]
+      const prev = pts[i - 1] || p
+      const next = pts[i + 1] || p
+      const tx = next.x - prev.x, ty = next.y - prev.y
+      const tl = Math.hypot(tx, ty) || 1
+      const perpX = -ty / tl, perpY = tx / tl
+      const side = rand() < 0.5 ? -1 : 1
+      const reach = 6 + rand() * 16
+      const mid = { x: p.x + perpX * reach * side * 0.55, y: p.y + perpY * reach * side * 0.55 }
+      const tip = {
+        x: p.x + perpX * reach * side + tx / tl * reach * 0.4,
+        y: p.y + perpY * reach * side + ty / tl * reach * 0.4,
+      }
+      out.push([p, mid, tip])
+    }
+    return out
   }
 
   function strokePolyline(pts, color, alpha, width) {
@@ -1091,6 +1124,16 @@
   // memory flow, drawn at full brightness over the dim relation web.
   const LIVE_INTENSITY = 1
   const LIVE_WINDOW = 2600
+  // Relation traffic is deliberately SLOW: it is ambient background structure,
+  // not an event. Live traffic keeps the original pace so an actual memory
+  // write/read still reads as "now".
+  const RELATION_CYCLE_FACTOR = 3.4
+  const LIVE_CYCLE_FACTOR = 0.45
+
+  /** Phase for one link. Slower for the ambient relation web. */
+  function linkPhase(seed, factor) {
+    return ((state.time / (SIGNAL_CYCLE * factor)) + (seed % 1000) / 1000) % 1
+  }
 
   function drawRelationArcs() {
     ctx.save()
@@ -1103,9 +1146,9 @@
       const color = r.kind === 'fork' ? [255, 213, 145]
         : r.kind === 'workspace' ? [125, 224, 192] : [140, 180, 255]
       const seed = hash(r.source + r.target)
-      // 48 samples: the arc reads as a continuous curve rather than a chain of
+      // 56 samples: the arc reads as a continuous curve rather than a chain of
       // visible segments once a lit band crosses it.
-      const segments = 48
+      const segments = 56
       const pts = arcPoints(pa, pb, seed, segments)
 
       // On a phone, 29 arcs in a narrow viewport easily drown the gas, so keep
@@ -1116,20 +1159,37 @@
 
       // Between currents the wire is black — no permanent channel glow.
       if (!active) return
-      drawSignalWave(t => polylinePoint(pts, t), color, gain, signalPhase(seed), segments, 1, RELATION_INTENSITY)
+
+      // Slow ambient flow along the relation.
+      drawSignalWave(t => polylinePoint(pts, t), color, gain,
+        linkPhase(seed, RELATION_CYCLE_FACTOR), segments, 1, RELATION_INTENSITY)
+
+      // Short side branches make the link read as a neural axon / discharge.
+      // They are decorative: drawn faintly so they never compete with the flow.
+      if (!state.isMobile) {
+        const branches = arcBranches(pts, seed)
+        const branchAlpha = 0.16 * gain * RELATION_INTENSITY
+        for (const br of branches) {
+          ctx.beginPath()
+          ctx.moveTo(br[0].x, br[0].y)
+          ctx.quadraticCurveTo(br[1].x, br[1].y, br[2].x, br[2].y)
+          ctx.strokeStyle = rgba(color, branchAlpha)
+          ctx.lineWidth = 0.7
+          ctx.lineCap = 'round'
+          ctx.stroke()
+        }
+      }
 
       // Live overlay: if either endpoint was touched by a real memory event
-      // just now, re-draw the SAME curve at full brightness with a fast phase
-      // so the realtime flow reads as a distinct, brighter pulse travelling
-      // along that link. The dim relation line stays visible underneath.
+      // just now, re-draw the SAME curve at full brightness with the original
+      // fast phase so realtime flow is visibly quicker than the ambient web.
       const heat = Math.max(
         1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
         1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
       )
       if (heat > 0) {
-        // A tighter, faster crest for live traffic.
-        const livePhase = ((state.time / (SIGNAL_CYCLE * 0.45)) + (seed % 1000) / 1000) % 1
-        drawSignalWave(t => polylinePoint(pts, t), color, gain, livePhase, segments, 1, LIVE_INTENSITY * heat)
+        drawSignalWave(t => polylinePoint(pts, t), color, gain,
+          linkPhase(seed, LIVE_CYCLE_FACTOR), segments, 1, LIVE_INTENSITY * heat)
       }
     })
     ctx.restore()
@@ -1342,8 +1402,9 @@
     ctx.globalCompositeOperation = 'lighter'
     const now = performance.now()
 
-    // Axons use the exact same signal wave as the nebula skin: dim static
-    // relation links, with a brighter realtime overlay on active clusters.
+    // Axons use the exact same signal wave as the nebula skin: the ambient
+    // relation flow is slow, the realtime overlay on active clusters keeps the
+    // original fast pace.
     for (const r of state.relations) {
       if (!r.a || !r.b) continue
       const active = matches(r.a) && matches(r.b)
@@ -1353,14 +1414,36 @@
       const seed = hash(r.source + r.target)
       const gain = (0.35 + r.weight * 0.65) * (state.isMobile ? Math.max(0, (r.weight - 0.3) * 1.4) : 1)
       if (gain < 0.05) continue
-      drawSignalWave(t => quadPoint(g, t), color, gain, signalPhase(seed), 48, 0.85, RELATION_INTENSITY)
+      drawSignalWave(t => quadPoint(g, t), color, gain,
+        linkPhase(seed, RELATION_CYCLE_FACTOR), 48, 0.85, RELATION_INTENSITY)
+
+      // Axon collaterals: short side twigs, same idea as the nebula branches.
+      if (!state.isMobile) {
+        const pt = quadPoint(g, 0.5)
+        const rand = rng(seed ^ 0x51)
+        for (let b = 0; b < 2; b += 1) {
+          const ang = rand() * Math.PI * 2
+          const reach = 8 + rand() * 14
+          ctx.beginPath()
+          ctx.moveTo(pt.x, pt.y)
+          ctx.quadraticCurveTo(
+            pt.x + Math.cos(ang) * reach * 0.6, pt.y + Math.sin(ang) * reach * 0.6,
+            pt.x + Math.cos(ang + 0.5) * reach, pt.y + Math.sin(ang + 0.5) * reach,
+          )
+          ctx.strokeStyle = rgba(color, 0.14 * gain * RELATION_INTENSITY)
+          ctx.lineWidth = 0.7
+          ctx.lineCap = 'round'
+          ctx.stroke()
+        }
+      }
+
       const heat = Math.max(
         1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
         1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
       )
       if (heat > 0) {
-        const livePhase = ((state.time / (SIGNAL_CYCLE * 0.45)) + (seed % 1000) / 1000) % 1
-        drawSignalWave(t => quadPoint(g, t), color, gain, livePhase, 48, 0.85, LIVE_INTENSITY * heat)
+        drawSignalWave(t => quadPoint(g, t), color, gain,
+          linkPhase(seed, LIVE_CYCLE_FACTOR), 48, 0.85, LIVE_INTENSITY * heat)
       }
     }
 
@@ -1957,33 +2040,17 @@
     state.focus = null
   })
   el.detailClose.addEventListener('click', closeDetail)
-  // Inside the Harness the ✕ asks the host overlay to close; opened directly
-  // in a browser tab there is no host to dismiss, so hide the control there.
-  const embedded = window.parent !== window
-  if (!embedded) el.close.hidden = true
+  // Close button is always visible so users can always find and click it.
   el.close.addEventListener('click', () => {
     try {
-      if (embedded) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
+      if (window.parent !== window) {
+        window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
+      } else {
+        window.close()
+      }
     } catch (_) {}
   })
-  // -------------------------------------------------------------------------
-  // Collapsible UI. All interactive controls are inside the menu; the top-right
-  // corner is left completely free of hit targets because the dsh client draws
-  // its own window chrome there.
-  // -------------------------------------------------------------------------
-  function setMenuOpen(open) {
-    el.menuBody.hidden = !open
-    el.menuToggle.setAttribute('aria-expanded', String(open))
-  }
-  el.menuToggle.addEventListener('click', () => {
-    setMenuOpen(el.menuBody.hidden)
-  })
-  // Click outside the menu closes it.
-  document.addEventListener('pointerdown', e => {
-    if (el.menuBody.hidden) return
-    if (el.controlMenu.contains(e.target)) return
-    setMenuOpen(false)
-  })
+  // The toolbar is flat and always visible; only the legend box is collapsible.
   el.legendToggle.addEventListener('click', () => {
     const collapsed = el.legendContent.hidden
     el.legendContent.hidden = !collapsed
@@ -1995,7 +2062,6 @@
     if (e.key !== 'Escape') return
     // Close the innermost layer first; never close the whole page while a
     // panel is still open.
-    if (!el.menuBody.hidden) { setMenuOpen(false); return }
     if (!el.detail.hidden) { closeDetail(); return }
     if (!el.legendContent.hidden && window.innerWidth <= 820) {
       el.legendContent.hidden = true
