@@ -943,7 +943,7 @@ export function apply(ctx, config) {
       if (streams.size > 128) streams.delete(streams.keys().next().value)
       publish('stream/start')
     } else if (frame.type === 'chunk' && streams.has(key) && !streams.get(key)
-      && ['text-delta', 'reasoning-delta', 'tool-call-delta'].includes(frame.chunk.type)) {
+      && frame.chunk.type === 'text-delta' && frame.chunk.text.trim() !== '') {
       streams.set(key, true)
       publish('stream/data')
     } else if (frame.type === 'end') {

@@ -134,20 +134,22 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const px = (x + 0.5 - n / 2) / (n / 2)
       const py = (y + 0.5 - n / 2) / (n / 2)
       const r = Math.hypot(px, py)
-      const angle = Math.atan2(py, px)
-      const coarse = noise(px * 3 + 17, py * 3 + 23)
-      const detail = noise(px * 13 + 31, py * 13 + 7)
-      const fine = noise(px * 34 + 5, py * 34 + 41)
-      const veins = 0.5 + 0.5 * Math.sin(angle * (neural ? 4 : 2) + r * 16 + coarse * 9)
-      const density = 0.48 * coarse + 0.30 * detail + 0.12 * fine + 0.10 * veins
-      // Soft irregular silhouette, no opaque planet rim or white outline.
-      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.52 - coarse * 0.1) / 0.38)))
-      const hot = smooth(Math.max(0, Math.min(1, (density - 0.24) / 0.53)))
+      const coarse = noise(px * 4 + 17, py * 4 + 23)
+      const granules = noise(px * 35 + 31, py * 35 + 7)
+      const fine = noise(px * 70 + 5, py * 70 + 41)
+      const discRadius = 0.82
+      const normalized = r / discRadius
+      const limb = Math.sqrt(Math.max(0, 1 - normalized * normalized))
+      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.80) / 0.035)))
+      // Fine solar granulation; smooth limb darkening defines a star, not a
+      // lumpy pink rock. A few low-contrast cool regions hint at sunspots.
+      const spots = smooth(Math.max(0, Math.min(1, (coarse - 0.65) / 0.2)))
+      const heat = Math.max(0, Math.min(1, (0.65 + granules * 0.24 + fine * 0.11 - spots * 0.28) * (0.56 + limb * 0.44)))
       const i = (y * n + x) * 4
-      image.data[i] = Math.round(35 + hot * (neural ? 130 : 195))
-      image.data[i + 1] = Math.round(30 + hot * 140)
-      image.data[i + 2] = Math.round(68 + hot * (neural ? 180 : 145))
-      image.data[i + 3] = Math.round(edge * (0.65 + hot * 0.3) * 255)
+      image.data[i] = Math.round(200 + heat * 55)
+      image.data[i + 1] = Math.round(65 + heat * 155)
+      image.data[i + 2] = Math.round(8 + heat * 70)
+      image.data[i + 3] = Math.round(edge * 255)
     }
     c.putImageData(image, 0, 0)
     nucleusTextures.set(key, cv)
@@ -875,7 +877,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     const activity = waiting ? 0.35 : conversing ? 0.65 : Math.max(input, output) * 0.3
     const breath = 1 + Math.sin(now * (waiting ? 0.0022 : 0.0011)) * (waiting ? 0.065 : 0.035)
     const size = (state.skin === 'neuron' ? 102 : 138) * zoom * breath
-    const tint = waiting ? [205, 160, 105] : conversing ? [125, 190, 220] : [125, 135, 180]
+    const tint = waiting ? [255, 135, 40] : conversing ? [255, 215, 110] : [255, 175, 65]
     const halo = softSprite(tint)
     if (waiting || conversing) {
       ctx.save()
@@ -1851,7 +1853,9 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const safeLeft = state.isMobile ? 8 : 18
       const safeRight = state.w - (state.isMobile ? 8 : 18)
 
-      const placed = []
+      const nucleusCenter = project([0, 0, 0])
+      const nucleusRadius = (state.skin === 'neuron' ? 48 : 58) * Math.min(1.8, Math.max(0.65, nucleusCenter.scale))
+      const placed = [{ x: nucleusCenter.x - nucleusRadius, y: nucleusCenter.y - nucleusRadius, w: nucleusRadius * 2, h: nucleusRadius * 2 }]
       // Prioritise larger memories and nearer clusters, then place greedily.
       const candidates = state.clusters
         .filter(c => matches(c))

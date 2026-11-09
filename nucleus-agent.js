@@ -1,5 +1,5 @@
 /** Pure, frame-rate-independent nucleus behaviour. No timers or DOM. */
-export const TRANSIT_MS = 2400
+export const TRANSIT_MS = 4200
 const smooth = x => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x) }
 
 /** Single traversal with a continuous leading and trailing edge; never wraps. */
