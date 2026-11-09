@@ -809,7 +809,11 @@
   }
 
   /** Fold an on-disk snapshot back in: drop ephemeral clouds now on disk. */
+  let refreshingSnapshot = false
   function refreshFromSnapshot() {
+    if (refreshingSnapshot) return
+    if (typeof document !== 'undefined' && document.hidden) return
+    refreshingSnapshot = true
     fetch('/memory-cloud/api/memories', { headers: { accept: 'application/json' } })
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(data => {
@@ -835,6 +839,7 @@
         }
       })
       .catch(() => { /* transient; next tick retries */ })
+      .finally(() => { refreshingSnapshot = false })
   }
 
   const SKIN_KEY = 'dsh-memory-cloud:skin:v1'
@@ -2082,7 +2087,11 @@
   window.addEventListener('resize', resize)
   window.addEventListener('orientationchange', () => window.setTimeout(resize, 250))
   // Periodically reconcile ephemeral live clouds with the on-disk snapshot.
-  window.setInterval(refreshFromSnapshot, 15000)
+  // 60s interval + visibility listener avoids draining CPU while backgrounded.
+  window.setInterval(refreshFromSnapshot, 60000)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshFromSnapshot()
+  })
 
   // -------------------------------------------------------------------------
   // Boot
