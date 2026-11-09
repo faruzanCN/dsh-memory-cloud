@@ -767,6 +767,8 @@ class MemoryReader {
 // ---------------------------------------------------------------------------
 
 const LIVE_EVENT_KINDS = new Map([
+  ['request/header', 'state'],
+  ['turn/start', 'state'],
   ['user/message', 'write'],
   ['assistant/message', 'write'],
   ['session/title', 'write'],
@@ -796,7 +798,7 @@ class LiveHub {
       }, 15000)
     }
     res.write(`event: hello\ndata: ${JSON.stringify({ clients: this.clients.size })}\n\n`)
-    for (const item of this.recent) res.write(`data: ${JSON.stringify(item)}\n\n`)
+    for (const item of this.recent) res.write(`data: ${JSON.stringify({ ...item, replay: true })}\n\n`)
     const close = () => this.remove(client)
     res.on('close', close)
     res.on('error', close)
@@ -853,6 +855,7 @@ function liveItemFromEvent(session, event) {
   const title = typeof session?.title === 'string' ? session.title : ''
   return {
     sessionId,
+    sourceSeq: event.seq,
     sessionTitle: title,
     kind,
     type: event.type,
@@ -865,6 +868,8 @@ function liveItemFromEvent(session, event) {
 function livePreview(event, data) {
   let content
   switch (event.type) {
+    case 'request/header': return '等待模型响应'
+    case 'turn/start': return '回合开始'
     case 'user/message': content = data.content; break
     case 'assistant/message': content = data.message?.content; break
     case 'tool/call': return typeof data.name === 'string' ? `调用 ${data.name}` : ''
@@ -925,7 +930,28 @@ export function apply(ctx, config) {
       ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
     }
   })
-  ctx.effect(() => () => live.dispose(), 'memory-cloud: live hub')
+  // Stream lifecycle is transient UI state, not a durable memory write.
+  // Send start + first meaningful chunk only, never every token.
+  const streams = new Map()
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    const sessionId = agent.id
+    const key = sessionId + ':' + frame.attemptId
+    const publish = type => live.publish({ sessionId, kind: 'state', type,
+      time: Date.now(), sourceSeq: frame.attemptId + ':' + type })
+    if (frame.type === 'start') {
+      streams.set(key, false)
+      if (streams.size > 128) streams.delete(streams.keys().next().value)
+      publish('stream/start')
+    } else if (frame.type === 'chunk' && streams.has(key) && !streams.get(key)
+      && ['text-delta', 'reasoning-delta', 'tool-call-delta'].includes(frame.chunk.type)) {
+      streams.set(key, true)
+      publish('stream/data')
+    } else if (frame.type === 'end') {
+      streams.delete(key)
+      if (frame.outcome.kind === 'abandoned') publish('stream/error')
+    }
+  })
+  ctx.effect(() => () => { streams.clear(); live.dispose() }, 'memory-cloud: live hub')
 
   const trustedHosts = new Set([
     'localhost',
@@ -974,6 +1000,9 @@ export function apply(ctx, config) {
       }
       if (path === '/memory-cloud/nebula.css') {
         return sendFile(res, 'text/css; charset=utf-8', await readAsset('nebula.css'))
+      }
+      if (path === '/memory-cloud/nucleus-agent.js') {
+        return sendFile(res, 'text/javascript; charset=utf-8', await readAsset('nucleus-agent.js'))
       }
       if (path === '/memory-cloud/nebula.js') {
         return sendFile(res, 'text/javascript; charset=utf-8', await readAsset('nebula.js'))

@@ -51,7 +51,7 @@ body {
    is directly reachable — no nested collapsibles. The right edge keeps a gap
    because the dsh client overlays its own window controls in that corner. */
 .topbar-actions {
-  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap;
   gap: 8px; pointer-events: auto;
   margin-right: 248px; /* clear the dsh client's top-right window controls */
 }
@@ -64,9 +64,10 @@ body {
   display: flex; align-items: center; gap: 7px;
   background: var(--mc-panel); border: 1px solid var(--mc-line); border-radius: 9px;
   padding: 0 10px; height: 34px; backdrop-filter: blur(12px);
+  flex: 0 1 auto;
 }
 .search svg { width: 14px; height: 14px; fill: none; stroke: var(--mc-muted); stroke-width: 1.6; flex: 0 0 auto; }
-.search input { border: 0; background: transparent; color: var(--mc-fg); font: inherit; font-size: 12.5px; outline: none; width: 150px; }
+.search input { border: 0; background: transparent; color: var(--mc-fg); font: inherit; font-size: 12.5px; outline: none; width: 130px; min-width: 70px; }
 .search input::placeholder { color: var(--mc-muted); }
 .chip {
   height: 34px; min-width: 34px; padding: 0 11px; border-radius: 9px; cursor: pointer;
@@ -162,6 +163,7 @@ body {
 .relation-key .rk-line.flow { border-top: 2px solid rgba(180, 215, 255, .95); box-shadow: 0 0 5px rgba(150, 205, 255, .7); }
 .relation-key .rk-line.dim { border-top: 1px solid rgba(140, 170, 235, .38); }
 .relation-key .rk-flow { margin-top: 3px; }
+.relation-key .rk-row.off { opacity: 0.35; }
 .relation-key .rk-count { margin-top: 3px; font-size: 10px; color: var(--mc-fg); font-variant-numeric: tabular-nums; }
 
 /* ---------------------------------------------------------------------------
@@ -352,3 +354,84 @@ body {
   .stats { gap: 3px 9px; }
   .stats .stat:last-child { flex: 0 0 auto; }
 }
+
+/* Single control dock. Scoped rules replace the old independent HUD placement. */
+body { touch-action: auto; }
+/* Immersive bottom dock: no titlebar, corner controls or top gradient. */
+.immersive-dock {
+  position: fixed; z-index: 20; left: calc(20px + var(--mc-safe-l)); bottom: calc(20px + var(--mc-safe-b));
+  display: flex; align-items: center; gap: 8px; padding: 7px;
+  max-width: calc(100vw - 40px - var(--mc-safe-l) - var(--mc-safe-r));
+  border: 1px solid rgba(150,170,255,.18); border-radius: 22px;
+  background: rgba(13,18,40,.64); backdrop-filter: blur(14px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.24);
+}
+.dock-identity { display: flex; align-items: center; gap: 7px; padding: 0 9px; min-width: 0; }
+.dock-mark { color: #b6b8e8; font-size: 18px; opacity: .75; }
+.dock-identity h1 { margin: 0; color: var(--mc-muted); font: 550 12px system-ui,sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.controls-fab {
+  position: static;
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 8px;
+  min-width: 82px; height: 40px; padding: 0 14px; border-radius: 16px;
+  background: rgba(28, 36, 75, .8); color: var(--mc-fg); border: 1px solid rgba(138,160,255,.3);
+  font: 600 12px system-ui, sans-serif; cursor: pointer; touch-action: manipulation;
+}
+.controls-fab:hover, .controls-fab[aria-expanded="true"] { background: rgba(55,67,130,.98); border-color: var(--mc-accent); }
+.controls-fab:focus-visible, .control-panel :focus-visible { outline: 2px solid var(--mc-accent); outline-offset: 3px; }
+.control-panel {
+  position: fixed; z-index: 19; left: calc(20px + var(--mc-safe-l)); bottom: calc(92px + var(--mc-safe-b));
+  width: min(360px, calc(100vw - 40px - var(--mc-safe-l) - var(--mc-safe-r)));
+  max-height: min(740px, calc(100dvh - 160px - var(--mc-safe-t) - var(--mc-safe-b)));
+  overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-width: thin;
+  background: rgba(13,18,40,.97); border: 1px solid var(--mc-line); border-radius: 18px;
+  box-shadow: 0 16px 52px rgba(0,0,0,.5); padding: 16px;
+}
+.controls-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+.controls-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.controls-head .lod-badge { height: 26px; font-size: 10px; }
+.controls-section { padding: 0 0 14px; margin-bottom: 14px; border-bottom: 1px solid var(--mc-line); }
+.controls-section h3 { margin: 0 0 12px; font-size: 12px; color: var(--mc-muted); }
+.control-panel .skin-switch { display: flex; width: 100%; height: 40px; }
+.control-panel .skin-btn { flex: 1; justify-content: center; height: 32px; font-size: 12px; }
+.control-panel .search { margin-top: 10px; width: 100%; height: 42px; }
+.control-panel .search input { width: 100%; min-width: 0; font-size: 16px; }
+.controls-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.control-panel .chip { height: 40px; font-size: 12px; padding: 0 10px; }
+.controls-hint { margin: 12px 0 0; font-size: 11px; line-height: 1.7; color: var(--mc-muted); }
+.control-panel .stats {
+  position: static; display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
+  width: 100%; max-width: none; border: none; background: transparent; padding: 0;
+  gap: 12px 8px; overflow: visible; backdrop-filter: none; pointer-events: auto;
+}
+.control-panel .stats .stat { display: flex; min-width: 0; }
+.control-panel .stats .stat:last-child { grid-column: 1 / -1; }
+.control-panel .stat b { font-size: 15px; overflow-wrap: anywhere; }
+.control-panel .stat span { font-size: 10px; }
+.control-panel .legend-box, .control-panel .live-panel {
+  position: static; width: 100%; max-width: none; margin-top: 14px;
+  background: transparent; box-shadow: none; backdrop-filter: none;
+}
+.control-panel .legend-content { max-height: none; overflow: visible; }
+.control-panel .legend-toggle, .control-panel .live-toggle { width: 32px; height: 32px; }
+.control-panel .legend-item { min-height: 36px; }
+.control-panel .relation-key .rk-row { display: flex; }
+.control-panel .relation-key h3 { display: block; }
+.control-panel .live-feed { max-height: 160px; touch-action: pan-y; }
+.immersive-dock .page-close {
+  position: static; flex-shrink: 0; min-width: 70px; height: 40px; border-radius: 16px;
+}
+@media (max-width: 820px) {
+  .immersive-dock {
+    left: calc(12px + var(--mc-safe-l)); bottom: calc(12px + var(--mc-safe-b));
+    max-width: calc(100vw - 24px - var(--mc-safe-l) - var(--mc-safe-r)); gap: 6px; padding: 6px;
+  }
+  .dock-identity { padding: 0 5px; gap: 5px; }
+  .dock-identity h1 { font-size: 11px; }
+  .control-panel {
+    left: calc(12px + var(--mc-safe-l)); bottom: calc(84px + var(--mc-safe-b));
+    width: min(360px, calc(100vw - 24px - var(--mc-safe-l) - var(--mc-safe-r)));
+    max-height: calc(100dvh - 116px - var(--mc-safe-t) - var(--mc-safe-b)); padding: 14px;
+  }
+  .immersive-dock .page-close { width: auto; padding: 0 12px; }
+}
+

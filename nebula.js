@@ -1,3 +1,4 @@
+import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
 /* Memory Nebula — 3D star-field renderer, no external dependencies.
  * Each DSH Session is a nebula cluster; each conversation fragment is a star
  * orbiting its cluster in 3D. Pure Canvas 2D with a hand-rolled perspective
@@ -11,6 +12,7 @@
     subtitle: document.getElementById('subtitle'),
     search: document.getElementById('search'),
     autorotate: document.getElementById('autorotate'),
+    toggleCurrent: document.getElementById('toggle-current'),
     reset: document.getElementById('reset'),
     close: document.getElementById('close'),
     legend: document.getElementById('legend'),
@@ -103,6 +105,55 @@
     return sprite
   }
 
+  // A cached turbulent surface: generated once per skin, never per frame.
+  // Idle keeps this layer stationary so the dust lanes and plasma veins remain
+  // legible; only the surrounding halo breathes or changes with agent state.
+  const nucleusTextures = new Map()
+  function nucleusTexture(neural) {
+    const key = neural ? 'neural' : 'stellar'
+    if (nucleusTextures.has(key)) return nucleusTextures.get(key)
+    const cv = document.createElement('canvas')
+    const n = 192
+    cv.width = cv.height = n
+    const c = cv.getContext('2d')
+    const image = c.createImageData(n, n)
+    const smooth = t => t * t * (3 - 2 * t)
+    const lattice = (x, y) => {
+      let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ 0x4a91
+      h = Math.imul(h ^ (h >>> 13), 1274126177)
+      return ((h ^ (h >>> 16)) >>> 0) / 4294967295
+    }
+    const noise = (x, y) => {
+      const ix = Math.floor(x), iy = Math.floor(y)
+      const u = smooth(x - ix), v = smooth(y - iy)
+      const a = lattice(ix, iy) * (1 - u) + lattice(ix + 1, iy) * u
+      const b = lattice(ix, iy + 1) * (1 - u) + lattice(ix + 1, iy + 1) * u
+      return a * (1 - v) + b * v
+    }
+    for (let y = 0; y < n; y += 1) for (let x = 0; x < n; x += 1) {
+      const px = (x + 0.5 - n / 2) / (n / 2)
+      const py = (y + 0.5 - n / 2) / (n / 2)
+      const r = Math.hypot(px, py)
+      const angle = Math.atan2(py, px)
+      const coarse = noise(px * 3 + 17, py * 3 + 23)
+      const detail = noise(px * 13 + 31, py * 13 + 7)
+      const fine = noise(px * 34 + 5, py * 34 + 41)
+      const veins = 0.5 + 0.5 * Math.sin(angle * (neural ? 4 : 2) + r * 16 + coarse * 9)
+      const density = 0.48 * coarse + 0.30 * detail + 0.12 * fine + 0.10 * veins
+      // Soft irregular silhouette, no opaque planet rim or white outline.
+      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.52 - coarse * 0.1) / 0.38)))
+      const hot = smooth(Math.max(0, Math.min(1, (density - 0.24) / 0.53)))
+      const i = (y * n + x) * 4
+      image.data[i] = Math.round(35 + hot * (neural ? 130 : 195))
+      image.data[i + 1] = Math.round(30 + hot * 140)
+      image.data[i + 2] = Math.round(68 + hot * (neural ? 180 : 145))
+      image.data[i + 3] = Math.round(edge * (0.65 + hot * 0.3) * 255)
+    }
+    c.putImageData(image, 0, 0)
+    nucleusTextures.set(key, cv)
+    return cv
+  }
+
   // One shared signal rhythm for BOTH skins: a slow, CONTINUOUS current.
   // Two staggered brightness crests keep charge flowing at every instant —
   // this is not a one-off lightning flash that lights everything then dies.
@@ -134,7 +185,11 @@
   const CUT_START = WAKE_CUTOFF * 0.62
   function wakeAt(t, p) {
     const lag = p - t
-    if (lag < 0) return 0
+    if (lag < -0.10) return 0
+    if (lag < 0) {
+      const u = 1 + lag / 0.10
+      return u * u * (3 - 2 * u)
+    }
     if (lag >= WAKE_CUTOFF) return 0
     const base = lag < CREST_WIDTH
       ? Math.exp(-((lag / CREST_WIDTH) ** 2) * 0.7)
@@ -150,10 +205,13 @@
   function currentAt(t, phase) {
     let level = 0
     for (const c of CRESTS) {
-      level = Math.max(level, wakeAt(t, (phase + c) % 1))
+      const p = (phase + c) % 1
+      // Keep the tail continuous as the phase crosses an endpoint; these are
+      // periodic field samples, not new particles emitted at each wrap.
+      level = Math.max(level, wakeAt(t, p), wakeAt(t, p - 1), wakeAt(t, p + 1))
     }
     // Below this threshold the wire is simply not drawn at all.
-    return level < 0.02 ? 0 : Math.min(1, level)
+    return Math.min(1, level)
   }
 
   /**
@@ -396,6 +454,7 @@
     targetPitch: 0.32,
     targetZoom: 1,
     skin: 'nebula',
+    relationCurrent: true, // switch for static relation currents
     relations: [],       // { source, target, weight, kind, kinds, shared, a, b }
     bridges: [],         // faint interstellar haze between neighbouring clouds
     // --- level of detail (zoom drives how much memory is revealed) ---
@@ -423,6 +482,8 @@
       newborns: [],   // fresh stars that fade into the cloud
       times: [],      // timestamps for the events/minute readout
       lastBurst: 0,
+      agent: new NucleusAgent(),
+      nucleusTransfers: new Map(), // session+direction -> bounded real-event current
       liveClusters: new Map(), // sessions not on disk yet -> ephemeral nebula
     },
     isMobile: false,
@@ -698,6 +759,14 @@
     const now = performance.now()
     const cluster = clusterForLive(item)
     cluster.lastLiveAt = now
+    const direction = state.live.agent.accept(item, now)
+    if (direction) {
+      const key = item.sessionId + ':' + direction
+      // Once per input / once per turn output, not once per chunk or tool.
+      state.live.nucleusTransfers.set(key, { cluster, direction, born: now })
+      while (state.live.nucleusTransfers.size > 12) state.live.nucleusTransfers.delete(state.live.nucleusTransfers.keys().next().value)
+    }
+    if (item.kind === 'state') return
     const isWrite = item.kind === 'write'
     if (isWrite) state.live.writes += 1
     else state.live.reads += 1
@@ -748,6 +817,108 @@
   function updateLiveRate(now) {
     const recent = state.live.times.filter(t => now - t < 60000)
     el.liveRate.textContent = String(recent.length)
+  }
+
+  /** Global nucleus at world origin; input converges, output radiates. */
+  function drawNucleus() {
+    const now = performance.now()
+    const transfers = state.live.nucleusTransfers
+    let input = 0, output = 0
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    for (const [key, flow] of transfers) {
+      const age = now - flow.born
+      if (age >= TRANSIT_MS) { transfers.delete(key); continue }
+      const energy = Math.sin(Math.PI * age / TRANSIT_MS)
+      if (flow.direction === 'input') input = Math.max(input, energy)
+      else output = Math.max(output, energy)
+      if (!matches(flow.cluster)) continue
+      const origin = project([0, 0, 0])
+      const destination = project(flow.cluster.center)
+      const from = flow.direction === 'input' ? destination : origin
+      const to = flow.direction === 'input' ? origin : destination
+      const color = flow.direction === 'input' ? [110, 205, 230] : [210, 165, 240]
+      const points = arcPoints(from, to, hash(key), 48)
+
+      // A continuous raised-cosine illumination field travels along the wire.
+      // Fade in/out and zero-valued troughs avoid hard leading edges, crawling
+      // particles and a permanently visible line. No gradient per segment.
+      const gradient = ctx.createLinearGradient(from.x, from.y, to.x, to.y)
+      for (let i = 0; i <= 48; i += 1) {
+        const t = i / 48
+        const light = passageLight(t, age)
+        gradient.addColorStop(t, rgba(color, light * 0.68))
+      }
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y)
+      ctx.strokeStyle = gradient
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.globalAlpha = 0.1
+      ctx.lineWidth = state.isMobile ? 7 : 11
+      ctx.stroke()
+      ctx.globalAlpha = 0.22
+      ctx.lineWidth = 3
+      ctx.stroke()
+      ctx.globalAlpha = 1
+      ctx.lineWidth = 0.85
+      ctx.stroke()
+    }
+
+    const p = project([0, 0, 0])
+    // Keep the nucleus modest at deep zoom; it must not mask readable memories.
+    const zoom = Math.min(1.8, Math.max(0.65, p.scale))
+    const mode = state.live.agent.mode(now)
+    const waiting = mode === 'waiting'
+    const conversing = mode === 'conversing'
+    const activity = waiting ? 0.35 : conversing ? 0.65 : Math.max(input, output) * 0.3
+    const breath = 1 + Math.sin(now * (waiting ? 0.0022 : 0.0011)) * (waiting ? 0.065 : 0.035)
+    const size = (state.skin === 'neuron' ? 102 : 138) * zoom * breath
+    const tint = waiting ? [205, 160, 105] : conversing ? [125, 190, 220] : [125, 135, 180]
+    const halo = softSprite(tint)
+    if (waiting || conversing) {
+      ctx.save()
+      ctx.translate(p.x, p.y)
+      ctx.rotate(now * (waiting ? 0.00018 : 0.00009))
+      ctx.globalAlpha = waiting ? 0.17 : 0.12
+      ctx.drawImage(halo, -size * 1.2, -size * 0.22, size * 2.4, size * 0.44)
+      ctx.rotate(1.4)
+      ctx.drawImage(halo, -size, -size * 0.2, size * 2, size * 0.4)
+      ctx.restore()
+    }
+    ctx.globalAlpha = 0.15 + activity * 0.22
+    ctx.drawImage(halo, p.x - size, p.y - size * 0.65, size * 2, size * 1.3)
+    ctx.globalAlpha = 0.38 + activity * 0.22
+    ctx.drawImage(halo, p.x - size * 0.36, p.y - size * 0.36, size * 0.72, size * 0.72)
+    // The material stays fixed while idle. Do not add a white-hot dot over
+    // the surface: that would wash all of the texture out again.
+    ctx.save()
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.globalAlpha = 0.92
+    const surfaceSize = (state.skin === 'neuron' ? 102 : 128) * zoom
+    ctx.drawImage(nucleusTexture(state.skin === 'neuron'), p.x - surfaceSize / 2, p.y - surfaceSize / 2, surfaceSize, surfaceSize)
+    ctx.restore()
+    if (state.skin === 'neuron') {
+      // Dendrites around the global neural hub, joined without an outlined soma.
+      ctx.beginPath()
+      for (let i = 0; i < 7; i += 1) {
+        const a = i * Math.PI * 2 / 7
+        const len = size * (0.52 + (i % 3) * 0.12)
+        const x = p.x + Math.cos(a) * len, y = p.y + Math.sin(a) * len
+        ctx.moveTo(p.x, p.y)
+        ctx.quadraticCurveTo(p.x + Math.cos(a + 0.3) * len * 0.6, p.y + Math.sin(a + 0.3) * len * 0.6, x, y)
+        for (const side of [-1, 1]) {
+          ctx.moveTo(x, y)
+          ctx.lineTo(x + Math.cos(a + side * 0.6) * len * 0.35, y + Math.sin(a + side * 0.6) * len * 0.35)
+        }
+      }
+      ctx.strokeStyle = rgba(tint, 0.24 + activity * 0.12)
+      ctx.lineWidth = 0.65
+      ctx.stroke()
+    }
+    ctx.restore()
+
   }
 
   /** Draw the live rings and newborn stars on top of the scene. */
@@ -864,6 +1035,21 @@
       : (neuron ? '滚轮放大逐层展开记忆 · 双击神经元钻入全文' : '滚轮放大逐层展开记忆 · 双击星团钻入全文')
   }
 
+  const RELATION_CURRENT_KEY = 'dsh-memory-cloud:relation-current:v1'
+
+  function setRelationCurrent(enabled) {
+    state.relationCurrent = !!enabled
+    if (el.toggleCurrent) {
+      el.toggleCurrent.classList.toggle('active', state.relationCurrent)
+      el.toggleCurrent.setAttribute('aria-pressed', String(state.relationCurrent))
+      el.toggleCurrent.title = state.relationCurrent ? '关系电流（已开启）' : '关系电流（已关闭）'
+    }
+    buildRelationKey(state.relations?.length || 0)
+    try {
+      window.localStorage.setItem(RELATION_CURRENT_KEY, String(state.relationCurrent))
+    } catch {}
+  }
+
   function buildRelationKey(count) {
     if (!el.relationKey) return
     const rows = [
@@ -876,7 +1062,9 @@
       rows.map(([kind, label, color, dashed]) =>
         `<div class="rk-row"><span class="rk-line ${kind}" style="border-top-color:${color};${dashed ? 'border-top-style:dashed' : ''}"></span>${label}</div>`).join('') +
       `<div class="rk-row rk-flow"><span class="rk-line flow"></span>实时记忆流（亮）</div>` +
-      `<div class="rk-row rk-flow"><span class="rk-line dim"></span>关系流（半亮）</div>` +
+      `<div class="rk-row rk-flow ${state.relationCurrent ? '' : 'off'}"><span class="rk-line dim"></span>关系流${state.relationCurrent ? '（半亮）' : '（已关闭）'}</div>` +
+      `<div class="rk-row">青色 → 星核：输入汇入</div>` +
+      `<div class="rk-row">星核 → 紫色：输出回流</div>` +
       `<div class="rk-count">${count} 条关联边</div>`
   }
 
@@ -1141,62 +1329,25 @@
   }
 
   function drawRelationArcs() {
+    if (!state.relationCurrent) return
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
-    const now = performance.now()
-    state.relations.forEach(r => {
-      if (!r.a || !r.b) return
-      const active = matches(r.a) && matches(r.b)
+    for (const r of state.relations) {
+      if (!r.a || !r.b || !matches(r.a) || !matches(r.b)) continue
       const pa = project(r.a.center), pb = project(r.b.center)
-      const color = r.kind === 'fork' ? [255, 213, 145]
-        : r.kind === 'workspace' ? [125, 224, 192] : [140, 180, 255]
       const seed = hash(r.source + r.target)
-      // 56 samples: the arc reads as a continuous curve rather than a chain of
-      // visible segments once a lit band crosses it.
-      const segments = 56
-      const pts = arcPoints(pa, pb, seed, segments)
-
-      // On a phone, 29 arcs in a narrow viewport easily drown the gas, so keep
-      // only the stronger links clearly visible there.
+      const pts = arcPoints(pa, pb, seed, 56)
+      const color = r.kind === 'fork' ? [255,213,145] : r.kind === 'workspace' ? [125,224,192] : [140,180,255]
       const strength = state.isMobile ? Math.max(0, (r.weight - 0.3) * 1.4) : 1
       const gain = (0.35 + r.weight * 0.65) * strength
-      if (gain < 0.05) return
-
-      // Between currents the wire is black — no permanent channel glow.
-      if (!active) return
-
-      // Slow ambient flow along the relation.
-      drawSignalWave(t => polylinePoint(pts, t), color, gain,
-        linkPhase(seed, RELATION_CYCLE_FACTOR), segments, 1, RELATION_INTENSITY)
-
-      // Short side branches make the link read as a neural axon / discharge.
-      // They are decorative: drawn faintly so they never compete with the flow.
-      if (!state.isMobile) {
-        const branches = arcBranches(pts, seed)
-        const branchAlpha = 0.16 * gain * RELATION_INTENSITY
-        for (const br of branches) {
-          ctx.beginPath()
-          ctx.moveTo(br[0].x, br[0].y)
-          ctx.quadraticCurveTo(br[1].x, br[1].y, br[2].x, br[2].y)
-          ctx.strokeStyle = rgba(color, branchAlpha)
-          ctx.lineWidth = 0.7
-          ctx.lineCap = 'round'
-          ctx.stroke()
-        }
+      if (gain < 0.05) continue
+      drawSignalWave(t => polylinePoint(pts,t), color, gain, linkPhase(seed,RELATION_CYCLE_FACTOR),56,1,RELATION_INTENSITY)
+      if (!state.isMobile) for (const br of arcBranches(pts,seed)) {
+        ctx.beginPath();ctx.moveTo(br[0].x,br[0].y)
+        ctx.quadraticCurveTo(br[1].x,br[1].y,br[2].x,br[2].y)
+        ctx.strokeStyle=rgba(color,0.08*gain);ctx.lineWidth=0.7;ctx.stroke()
       }
-
-      // Live overlay: if either endpoint was touched by a real memory event
-      // just now, re-draw the SAME curve at full brightness with the original
-      // fast phase so realtime flow is visibly quicker than the ambient web.
-      const heat = Math.max(
-        1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
-        1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
-      )
-      if (heat > 0) {
-        drawSignalWave(t => polylinePoint(pts, t), color, gain,
-          linkPhase(seed, LIVE_CYCLE_FACTOR), segments, 1, LIVE_INTENSITY * heat)
-      }
-    })
+    }
     ctx.restore()
   }
 
@@ -1405,51 +1556,13 @@
   function drawNeuronSkin() {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
-    const now = performance.now()
-
-    // Axons use the exact same signal wave as the nebula skin: the ambient
-    // relation flow is slow, the realtime overlay on active clusters keeps the
-    // original fast pace.
     for (const r of state.relations) {
-      if (!r.a || !r.b) continue
-      const active = matches(r.a) && matches(r.b)
-      if (!active) continue
-      const g = linkGeometry(r)
-      const color = r.kind === 'fork' ? [255, 213, 145] : [110, 170, 255]
-      const seed = hash(r.source + r.target)
-      const gain = (0.35 + r.weight * 0.65) * (state.isMobile ? Math.max(0, (r.weight - 0.3) * 1.4) : 1)
-      if (gain < 0.05) continue
-      drawSignalWave(t => quadPoint(g, t), color, gain,
-        linkPhase(seed, RELATION_CYCLE_FACTOR), 48, 0.85, RELATION_INTENSITY)
-
-      // Axon collaterals: short side twigs, same idea as the nebula branches.
-      if (!state.isMobile) {
-        const pt = quadPoint(g, 0.5)
-        const rand = rng(seed ^ 0x51)
-        for (let b = 0; b < 2; b += 1) {
-          const ang = rand() * Math.PI * 2
-          const reach = 8 + rand() * 14
-          ctx.beginPath()
-          ctx.moveTo(pt.x, pt.y)
-          ctx.quadraticCurveTo(
-            pt.x + Math.cos(ang) * reach * 0.6, pt.y + Math.sin(ang) * reach * 0.6,
-            pt.x + Math.cos(ang + 0.5) * reach, pt.y + Math.sin(ang + 0.5) * reach,
-          )
-          ctx.strokeStyle = rgba(color, 0.14 * gain * RELATION_INTENSITY)
-          ctx.lineWidth = 0.7
-          ctx.lineCap = 'round'
-          ctx.stroke()
-        }
-      }
-
-      const heat = Math.max(
-        1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
-        1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
-      )
-      if (heat > 0) {
-        drawSignalWave(t => quadPoint(g, t), color, gain,
-          linkPhase(seed, LIVE_CYCLE_FACTOR), 48, 0.85, LIVE_INTENSITY * heat)
-      }
+      if (!state.relationCurrent || !r.a || !r.b || !matches(r.a) || !matches(r.b)) continue
+      const g=linkGeometry(r), seed=hash(r.source+r.target)
+      const color=r.kind==='fork' ? [255,213,145] : [110,170,255]
+      const gain=(0.35+r.weight*0.65)*(state.isMobile ? Math.max(0,(r.weight-0.3)*1.4) : 1)
+      if (gain<0.05) continue
+      drawSignalWave(t=>quadPoint(g,t),color,gain,linkPhase(seed,RELATION_CYCLE_FACTOR),48,0.85,RELATION_INTENSITY)
     }
 
     // Dendritic arbors: ONE path per depth across ALL neurons (4 strokes total
@@ -1710,6 +1823,7 @@
       drawRelationArcs()
       drawNebulaStars(projected)
     }
+    drawNucleus()
     drawLiveEffects()
 
     // Captions only make sense once a cluster fills the view.
@@ -2040,6 +2154,11 @@
     el.autorotate.classList.toggle('active', state.autoRotate)
     el.autorotate.setAttribute('aria-pressed', String(state.autoRotate))
   })
+  if (el.toggleCurrent) {
+    el.toggleCurrent.addEventListener('click', () => {
+      setRelationCurrent(!state.relationCurrent)
+    })
+  }
   el.reset.addEventListener('click', () => {
     state.targetYaw = 0.6; state.targetPitch = 0.32; state.targetZoom = 1
     state.focus = null
@@ -2055,7 +2174,24 @@
       }
     } catch (_) {}
   })
-  // The toolbar is flat and always visible; only the legend box is collapsible.
+  // One bottom-left control dock; the page Close button remains independent.
+  const controlsToggle = document.getElementById('controls-toggle')
+  const controlsPanel = document.getElementById('controls-panel')
+  function setControlsOpen(open, restoreFocus = false) {
+    controlsPanel.hidden = !open
+    controlsToggle.setAttribute('aria-expanded', String(open))
+    controlsToggle.innerHTML = open ? '<span aria-hidden="true">⌄</span> 收起' : '<span aria-hidden="true">☰</span> 控制'
+    if (open) el.skinButtons[0]?.focus({ preventScroll: true })
+    else if (restoreFocus) controlsToggle.focus({ preventScroll: true })
+  }
+  controlsToggle.addEventListener('click', () => setControlsOpen(controlsPanel.hidden, true))
+  document.addEventListener('pointerdown', e => {
+    if (!controlsPanel.hidden && !controlsPanel.contains(e.target) && !controlsToggle.contains(e.target)) {
+      setControlsOpen(false)
+    }
+  })
+
+  // Only the activity / workspace sections fold within the single-level panel.
   el.legendToggle.addEventListener('click', () => {
     const collapsed = el.legendContent.hidden
     el.legendContent.hidden = !collapsed
@@ -2065,15 +2201,10 @@
 
   window.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return
+    if (!controlsPanel.hidden) { setControlsOpen(false, true); return }
     // Close the innermost layer first; never close the whole page while a
     // panel is still open.
     if (!el.detail.hidden) { closeDetail(); return }
-    if (!el.legendContent.hidden && window.innerWidth <= 820) {
-      el.legendContent.hidden = true
-      el.legendToggle.textContent = '+'
-      el.legendToggle.setAttribute('aria-expanded', 'false')
-      return
-    }
     if (window.parent !== window) window.parent.postMessage({ source: 'dsh-memory-cloud', type: 'close' }, location.origin)
   })
   el.liveToggle.addEventListener('click', () => {
@@ -2100,6 +2231,12 @@
   let savedSkin = 'nebula'
   try { savedSkin = window.localStorage.getItem(SKIN_KEY) || 'nebula' } catch (_) { /* private mode */ }
   setSkin(savedSkin)
+  let savedRelationCurrent = true
+  try {
+    const raw = window.localStorage.getItem(RELATION_CURRENT_KEY)
+    if (raw !== null) savedRelationCurrent = raw === 'true'
+  } catch (_) {}
+  setRelationCurrent(savedRelationCurrent)
   requestAnimationFrame(render)
   fetch('/memory-cloud/api/memories', { headers: { accept: 'application/json' } })
     .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))

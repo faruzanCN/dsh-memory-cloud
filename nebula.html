@@ -5,83 +5,51 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#070a1c">
 <meta name="color-scheme" content="dark">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>记忆星云 · Memory Nebula</title>
 <link rel="stylesheet" href="/memory-cloud/nebula.css">
 </head>
 <body>
   <canvas id="sky" aria-label="3D 记忆星云图"></canvas>
-
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <div class="brand-text">
-        <h1 id="title">记忆星云</h1>
-        <p id="subtitle">正在读取 DSH 会话记忆…</p>
-      </div>
+  <div class="immersive-dock" aria-label="星图快捷操作">
+    <div class="dock-identity">
+      <span class="dock-mark" aria-hidden="true">✦</span>
+      <h1 id="title">记忆星云</h1>
     </div>
-    <!-- One flat, always-visible toolbar on the right. No nested collapsibles:
-         everything (including Close) is directly reachable. The right edge
-         keeps a gap because the dsh client overlays its window controls there. -->
-    <div class="topbar-actions" id="control-menu">
-      <span id="lod-badge" class="lod-badge" data-lod="0" title="当前细节等级">全景</span>
+    <button id="controls-toggle" class="controls-fab" type="button" aria-expanded="false" aria-controls="controls-panel" aria-haspopup="dialog"><span aria-hidden="true">☰</span> 控制</button>
+    <button id="close" class="chip close page-close" type="button" title="关闭星云页面" aria-label="关闭星云页面"><span aria-hidden="true">✕</span> 关闭</button>
+  </div>
+  <aside id="controls-panel" class="control-panel" role="dialog" aria-modal="false" aria-labelledby="controls-title" hidden>
+    <header class="controls-head"><h2 id="controls-title">星图控制</h2><span id="lod-badge" class="lod-badge" data-lod="0">全景</span></header>
+    <section class="controls-section" aria-label="视图控制">
       <div class="skin-switch" role="group" aria-label="皮肤切换">
-        <button id="skin-nebula" class="skin-btn active" type="button" data-skin="nebula" aria-pressed="true"><span class="skin-ico">✦</span><span class="skin-txt">星云</span></button>
-        <button id="skin-neuron" class="skin-btn" type="button" data-skin="neuron" aria-pressed="false"><span class="skin-ico">⌁</span><span class="skin-txt">神经元</span></button>
+        <button id="skin-nebula" class="skin-btn active" type="button" data-skin="nebula" aria-pressed="true">✦ 星云</button>
+        <button id="skin-neuron" class="skin-btn" type="button" data-skin="neuron" aria-pressed="false">⌁ 神经元</button>
       </div>
-      <label class="search">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L14 14"/></svg>
-        <input id="search" type="search" placeholder="搜索记忆 / 标题 / 工作区" autocomplete="off" spellcheck="false">
-      </label>
-      <button id="autorotate" class="chip active" type="button" aria-pressed="true" title="自动旋转" aria-label="自动旋转"><span class="chip-glyph">⟳</span><span class="chip-label">自动旋转</span></button>
-      <button id="reset" class="chip" type="button" title="复位视角" aria-label="复位视角"><span class="chip-glyph">⌖</span><span class="chip-label">复位视角</span></button>
-      <button id="close" class="chip close" type="button" title="关闭" aria-label="关闭"><span class="chip-glyph">✕</span><span class="chip-label">关闭</span></button>
-    </div>
-    <p id="hint" class="sr-only">拖拽旋转 · 滚轮缩放 · 悬停查看 · 点击星团展开记忆</p>
-  </header>
-
-  <aside id="legend-box" class="legend-box" aria-label="工作区与关联图例">
-    <div class="legend-head">
-      <span class="legend-head-title">图例</span>
-      <button id="legend-toggle" class="legend-toggle" type="button" aria-expanded="true" aria-controls="legend-content">−</button>
-    </div>
-    <div id="legend-content" class="legend-content">
-      <div id="legend" class="legend" aria-label="工作区图例"></div>
-      <div id="relation-key" class="relation-key" aria-label="关联图例"></div>
-    </div>
+      <label class="search"><span class="sr-only">搜索记忆</span><input id="search" type="search" placeholder="搜索记忆 / 标题 / 工作区" autocomplete="off" spellcheck="false"></label>
+      <div class="controls-actions">
+        <button id="autorotate" class="chip active" type="button" aria-pressed="true">⟳ 自动旋转</button>
+        <button id="toggle-current" class="chip active" type="button" aria-pressed="true" title="关系电流">⚡ 关系电流</button>
+        <button id="reset" class="chip" type="button">⌖ 复位视角</button>
+      </div>
+      <p id="hint" class="controls-hint">拖拽旋转 · 滚轮缩放</p>
+    </section>
+    <section class="controls-section" aria-labelledby="stats-title">
+      <h3 id="stats-title">记忆概览</h3>
+      <p id="subtitle" class="sr-only">正在读取 DSH 会话记忆…</p>
+      <div id="stats" class="stats" aria-label="统计信息"></div>
+    </section>
+    <section id="live-panel" class="live-panel" aria-label="实时记忆活动">
+      <header class="live-head"><span class="live-dot" aria-hidden="true"></span><span class="live-title">实时记忆流</span><button id="live-toggle" class="live-toggle" type="button" aria-pressed="true" aria-label="收起实时活动">−</button></header>
+      <div id="live-body"><div class="live-metrics"><span><b id="live-writes">0</b> 写入</span><span><b id="live-reads">0</b> 读取</span><span class="live-rate"><b id="live-rate">0</b> 事件/分</span></div><div id="live-feed" class="live-feed" aria-live="polite"></div></div>
+    </section>
+    <section id="legend-box" class="legend-box" aria-label="工作区与关联图例">
+      <header class="legend-head"><span class="legend-head-title">工作区与图例</span><button id="legend-toggle" class="legend-toggle" type="button" aria-expanded="true" aria-controls="legend-content" aria-label="收起图例">−</button></header>
+      <div id="legend-content" class="legend-content"><div id="legend" class="legend" aria-label="工作区筛选"></div><div id="relation-key" class="relation-key" aria-label="关联图例"></div></div>
+    </section>
   </aside>
-
-  <section id="live-panel" class="live-panel" aria-label="实时记忆活动">
-    <header class="live-head">
-      <span class="live-dot" aria-hidden="true"></span>
-      <span class="live-title">实时记忆流</span>
-      <button id="live-toggle" class="live-toggle" type="button" aria-pressed="true" title="收起/展开">−</button>
-    </header>
-    <div id="live-body">
-      <div class="live-metrics">
-        <span><b id="live-writes">0</b> 写入</span>
-        <span><b id="live-reads">0</b> 读取</span>
-        <span class="live-rate"><b id="live-rate">0</b> 事件/分</span>
-      </div>
-      <div id="live-feed" class="live-feed" aria-live="polite"></div>
-    </div>
-  </section>
-
-  <div id="stats" class="stats" aria-label="统计信息"></div>
-
   <div id="tooltip" class="tooltip" hidden></div>
-
-  <section id="detail" class="detail" hidden aria-label="记忆详情">
-    <div class="detail-grip" aria-hidden="true"></div>
-    <button id="detail-close" class="detail-close" type="button" aria-label="关闭详情">✕</button>
-    <h2 id="detail-title"></h2>
-    <div id="detail-meta" class="detail-meta"></div>
-    <div id="detail-fragments" class="detail-fragments"></div>
-  </section>
-
+  <section id="detail" class="detail" hidden aria-label="记忆详情"><div class="detail-grip" aria-hidden="true"></div><button id="detail-close" class="detail-close" type="button" aria-label="关闭详情">✕</button><h2 id="detail-title"></h2><div id="detail-meta" class="detail-meta"></div><div id="detail-fragments" class="detail-fragments"></div></section>
   <div id="loading" class="loading"><span class="spinner"></span><span>正在解码会话日志…</span></div>
-
-  <script src="/memory-cloud/nebula.js"></script>
+  <script type="module" src="/memory-cloud/nebula.js"></script>
 </body>
 </html>

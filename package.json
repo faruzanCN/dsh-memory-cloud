@@ -47,7 +47,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "assets/*"
+    "assets/*",
+    "nucleus-agent.js"
   ],
   "dsh": {
     "bundle": {
