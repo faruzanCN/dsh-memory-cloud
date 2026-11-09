@@ -111,6 +111,9 @@ body {
 .relation-key .rk-line.fork { border-top: 2px dashed #ffd591; }
 .relation-key .rk-line.topic { border-top-width: 2px; }
 .relation-key .rk-line.workspace { border-top-width: 3px; }
+.relation-key .rk-line.flow { border-top: 2px solid rgba(180, 215, 255, .95); box-shadow: 0 0 5px rgba(150, 205, 255, .7); }
+.relation-key .rk-line.dim { border-top: 1px solid rgba(140, 170, 235, .38); }
+.relation-key .rk-flow { margin-top: 3px; }
 .relation-key .rk-line.topic { border-top-color: #8aa0ff; }
 .relation-key .rk-line.workspace { border-top-color: #7de0c0; }
 .relation-key .rk-count { margin-top: 3px; font-size: 10px; color: var(--mc-fg); font-variant-numeric: tabular-nums; }

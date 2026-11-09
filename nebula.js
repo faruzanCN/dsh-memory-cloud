@@ -143,7 +143,10 @@
   }
 
   /**
-   * Shared renderer for BOTH skins.
+   * Shared renderer for BOTH skins. `intensity` separates the two kinds of
+   * current: static relation links are drawn at half brightness (a quiet
+   * background web), while a link carrying live memory traffic is drawn at
+   * full brightness so the eye can tell which flow is happening right now.
    *
    * Performance (Android WebView): stroking ~56 segments x 3-4 passes meant
    * 6000+ stroke() calls per frame and stuttered badly on mobile Canvas2D,
@@ -153,7 +156,7 @@
    * per link regardless of detail, and the gradient interpolates brightness
    * continuously — genuinely silky even when the signal steps at 30 fps.
    */
-  function drawSignalWave(pointAt, color, gain, phase, segments, scale) {
+  function drawSignalWave(pointAt, color, gain, phase, segments, scale, intensity = 1) {
     const a = pointAt(0), b = pointAt(1)
     if (Math.abs(b.x - a.x) + Math.abs(b.y - a.y) < 1) return
 
@@ -177,7 +180,7 @@
     for (let k = 0; k <= K; k += 1) {
       // Dark stops are fully transparent, not a dim colour, so no permanent
       // hairline survives between currents. Lit stops stay below white.
-      grad.addColorStop(k / K, rgba(color, Math.min(0.9, levels[k] * 1.05)))
+      grad.addColorStop(k / K, rgba(color, Math.min(0.9, levels[k] * 1.05) * intensity))
     }
 
     ctx.beginPath()
@@ -192,7 +195,7 @@
 
     // Only two passes, both feathered by the gradient itself. A wide opaque
     // stroke with round caps was what produced the hard white outline.
-    ctx.globalAlpha = 0.22 * scale
+    ctx.globalAlpha = 0.22 * scale * intensity
     ctx.lineWidth = 6 * scale
     ctx.stroke()
     ctx.globalAlpha = 1
@@ -256,24 +259,26 @@
    * field. Everything is stored as world-space segments so the arbor keeps its
    * 3D structure while the camera rotates.
    */
-  function buildDendrites(center, seed, weight) {
+  function buildDendrites(center, seed, weight, scale = 1) {
     const rand = rng(seed)
     const segments = []
     const tips = []
-    // A busier session grows a denser dendritic field (3..7 trunks, 2..3
-    // branch levels). This is the neuron skin's "memory count" made visible.
-    const trunkCount = 3 + Math.round(weight * 4)
-    const maxDepth = weight > 0.55 ? 3 : 2
+    // Dendritic complexity is the neuron skin's memory count made visible.
+    // weight already comes from the FULL committed fragment count, so a
+    // 560-memory session grows a much denser tree than a 3-memory one.
+    const trunkCount = 2 + Math.round(weight * 9)      // 2 .. 11 trunks
+    const maxDepth = weight > 0.72 ? 4 : weight > 0.5 ? 3 : 2
+    const branchesAt = depth => (depth === 0 ? (weight > 0.6 ? 3 : 2) : 2)
 
     function grow(from, dir, length, width, depth) {
       const to = vadd(from, vscale(dir, length))
       segments.push({ a: from, b: to, width, depth })
-      if (depth >= maxDepth || length < 6) {
+      if (depth >= maxDepth || length < 5) {
         tips.push({ p: to, depth })
         return
       }
       const [u, v] = vperp(dir)
-      const branches = depth === 0 ? 3 : 2
+      const branches = branchesAt(depth)
       for (let k = 0; k < branches; k += 1) {
         // Spread children around the parent axis with a clear fork angle.
         const spread = 0.45 + rand() * 0.5
@@ -284,13 +289,19 @@
       }
     }
 
+    const baseLength = (28 + rand() * 14) * scale
     for (let i = 0; i < trunkCount; i += 1) {
       const theta = (i / trunkCount) * Math.PI * 2 + rand() * 0.6
       const phi = (rand() - 0.5) * 1.5
       const dir = vnorm([Math.cos(theta) * Math.cos(phi), Math.sin(phi), Math.sin(theta) * Math.cos(phi)])
-      grow(center, dir, 30 + rand() * 16, 2.3, 0)
+      grow(center, dir, baseLength * (0.8 + rand() * 0.4), 2.3 * scale, 0)
     }
     return { segments, tips }
+  }
+
+  /** Visual radius multiplier from memory weight: ~0.55x .. 1.75x. */
+  function clusterScale(weight) {
+    return 0.55 + weight * 1.2
   }
 
   /**
@@ -299,7 +310,7 @@
    * joined by wispy filaments, with ragged edges and holes between the lobes.
    * All points are world-space so the cloud keeps its volume while rotating.
    */
-  function buildCloud(center, seed, activity, weight) {
+  function buildCloud(center, seed, activity, weight, scale = 1) {
     const rand = rng(seed)
     const puffs = []
     const filaments = []
@@ -308,7 +319,7 @@
     // A dominant stretch axis makes the whole cloud elongated, not round.
     const axis = vnorm([(rand() - 0.5) * 2, (rand() - 0.5) * 1.2, (rand() - 0.5) * 2])
     const [u, v] = vperp(axis)
-    const reach = 24 + activity * 12 + weight * 18
+    const reach = (26 + activity * 12 + weight * 22) * scale
 
     const lobeCenters = []
     for (let l = 0; l < lobes; l += 1) {
@@ -327,13 +338,13 @@
       const count = 4 + Math.round(weight * 4) + Math.floor(rand() * 3)
       for (let k = 0; k < count; k += 1) {
         const jitter = [
-          (rand() - 0.5) * 26, (rand() - 0.5) * 20, (rand() - 0.5) * 26,
+          (rand() - 0.5) * 26 * scale, (rand() - 0.5) * 20 * scale, (rand() - 0.5) * 26 * scale,
         ]
         // Bias puffs along the axis -> wispy, filamentary clumps.
-        const stretch = (rand() - 0.5) * 18
+        const stretch = (rand() - 0.5) * 18 * scale
         puffs.push({
           pos: vadd(p, vadd(jitter, vscale(axis, stretch))),
-          r: 13 + rand() * 20,
+          r: (13 + rand() * 20) * scale,
           alpha: 0.04 + rand() * 0.06,
           // Some puffs are cooler/warmer, so the cloud is not one flat colour.
           tint: rand() < 0.28 ? 'cool' : rand() < 0.16 ? 'warm' : 'main',
@@ -377,6 +388,7 @@
     targetZoom: 1,
     skin: 'nebula',
     relations: [],       // { source, target, weight, kind, kinds, shared, a, b }
+    bridges: [],         // faint interstellar haze between neighbouring clouds
     // --- level of detail (zoom drives how much memory is revealed) ---
     lod: 0,              // 0 全景 · 1 星团 · 2 碎片摘要 · 3 碎片全文
     focus: null,         // cluster being drilled into
@@ -438,11 +450,18 @@
 
     const sessions = data.sessions || []
     const golden = Math.PI * (3 - Math.sqrt(5))
-    // Normalise each session's actual memory volume against the busiest one.
-    // Everything visual (gas density, star count, dendrite complexity, cloud
-    // size) is scaled from this, so the picture reflects real memory data.
-    const maxFragments = Math.max(1, ...sessions.map(s => (s.fragments || []).length))
+    // `session.fragments` is only the SAMPLED digest (max maxFragments), so it
+    // cannot describe how big a memory really is. Use the committed totals.
+    const fullCount = s => Math.max(1, s.counts?.fragments || (s.fragments || []).length || 1)
+    const maxMemories = Math.max(1, ...sessions.map(fullCount))
     const maxEvents = Math.max(1, ...sessions.map(s => s.counts?.events || 0))
+    // A log-scale weight keeps one huge session from dwarfing everything else
+    // while still making a 560-memory cloud clearly larger than a 3-memory one.
+    const memoryWeight = s => {
+      const raw = fullCount(s)
+      const ratio = Math.log(raw) / Math.log(maxMemories)
+      return Math.max(0.12, Math.min(1, 0.35 + 0.65 * ratio))
+    }
     // Spread cluster centers on a fibonacci sphere so the nebula reads as a
     // galaxy, with radius scaled gently by activity (busier Sessions drift out).
     // On a narrow screen shrink the whole cloud so rotation rarely clips a
@@ -461,13 +480,13 @@
         Math.sin(theta) * radiusAtY * R * spread,
       ]
       const fragments = session.fragments || []
-      const weight = Math.min(1,
-        0.6 * (fragments.length / maxFragments) + 0.4 * ((session.counts?.events || 0) / maxEvents))
+      const weight = memoryWeight(session)
+      const scale = clusterScale(weight)
       const color = colorOf.get(session.workspace) || PALETTE[i % PALETTE.length]
-      const cloud = buildCloud(center, hash(session.id) ^ 0x7e31, activity, weight)
+      const cloud = buildCloud(center, hash(session.id) ^ 0x7e31, activity, weight, scale)
       const cluster = {
-        session, color, center, cloud, stars: [], weight,
-        dendrites: buildDendrites(center, hash(session.id) ^ 0x2c91, weight),
+        session, color, center, cloud, stars: [], weight, scale,
+        dendrites: buildDendrites(center, hash(session.id) ^ 0x2c91, weight, scale),
       }
 
       // Gas puffs themselves are the clickable "nebula" surface; pick the
@@ -539,6 +558,7 @@
       .map(r => ({ ...r, a: byId.get(r.source), b: byId.get(r.target) }))
       .filter(r => r.a && r.b)
     buildRelationKey(data.relations?.length || 0)
+    state.bridges = buildBridges()
 
     state.stats = data.stats
     buildLegend()
@@ -607,7 +627,7 @@
         color: PALETTE[(idx + 3) % PALETTE.length],
         center, cloud, stars: [], ephemeral: true,
         dendrites: buildDendrites(center, hash(item.sessionId) ^ 0x2c91, 0.35),
-        core: null, weight: 0.25,
+        core: null, weight: 0.25, scale: 0.85,
         lobeCenters: cloud.lobeCenters,
       }
       // Reuse the normal hit-test core so tapping the new cloud works.
@@ -619,6 +639,25 @@
       state.stars.push(core)
       state.live.liveClusters.set(item.sessionId, ephemeral)
       state.clusters.push(ephemeral)
+
+      // Give the newborn cloud a temporary link to its nearest durable
+      // neighbour: the live memory flow needs a wire to travel along. It is
+      // removed together with the ephemeral cluster on the next snapshot.
+      let nearest = null, bestD = Infinity
+      for (const c of state.clusters) {
+        if (c === ephemeral || c.ephemeral) continue
+        const d = Math.hypot(
+          c.center[0] - center[0], c.center[1] - center[1], c.center[2] - center[2],
+        )
+        if (d < bestD) { bestD = d; nearest = c }
+      }
+      if (nearest) {
+        state.relations.push({
+          source: item.sessionId, target: nearest.session.id,
+          weight: 0.85, kind: 'live', kinds: ['live'], shared: [],
+          a: ephemeral, b: nearest,
+        })
+      }
     }
     if (item.sessionTitle && ephemeral.session.title === '正在进行的对话') {
       ephemeral.session.title = item.sessionTitle
@@ -754,6 +793,8 @@
           // Remove its core from the flat hit-test list.
           const si = state.stars.indexOf(cluster.core)
           if (si >= 0) state.stars.splice(si, 1)
+          // Drop the temporary live-only link that pointed at this cloud.
+          state.relations = state.relations.filter(r => r.a !== cluster && r.b !== cluster)
         }
         if (state.stats) {
           state.stats.sessions = data.stats.sessions
@@ -800,6 +841,8 @@
       `<h3>会话关联</h3>` +
       rows.map(([kind, label, color, dashed]) =>
         `<div class="rk-row"><span class="rk-line ${kind}" style="border-top-color:${color};${dashed ? 'border-top-style:dashed' : ''}"></span>${label}</div>`).join('') +
+      `<div class="rk-row rk-flow"><span class="rk-line flow"></span>实时记忆流（亮）</div>` +
+      `<div class="rk-row rk-flow"><span class="rk-line dim"></span>关系流（半亮）</div>` +
       `<div class="rk-count">${count} 条关联边</div>`
   }
 
@@ -1004,9 +1047,18 @@
     return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }
   }
 
+  // Static relation web: half brightness. These are the enduring structural
+  // links between memory clusters, not something happening right now.
+  const RELATION_INTENSITY = 0.5
+  // A link touching a cluster with recent live activity carries the real-time
+  // memory flow, drawn at full brightness over the dim relation web.
+  const LIVE_INTENSITY = 1
+  const LIVE_WINDOW = 2600
+
   function drawRelationArcs() {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
+    const now = performance.now()
     state.relations.forEach(r => {
       if (!r.a || !r.b) return
       const active = matches(r.a) && matches(r.b)
@@ -1027,8 +1079,85 @@
 
       // Between currents the wire is black — no permanent channel glow.
       if (!active) return
-      drawSignalWave(t => polylinePoint(pts, t), color, gain, signalPhase(seed), segments, 1)
+      drawSignalWave(t => polylinePoint(pts, t), color, gain, signalPhase(seed), segments, 1, RELATION_INTENSITY)
+
+      // Live overlay: if either endpoint was touched by a real memory event
+      // just now, re-draw the SAME curve at full brightness with a fast phase
+      // so the realtime flow reads as a distinct, brighter pulse travelling
+      // along that link. The dim relation line stays visible underneath.
+      const heat = Math.max(
+        1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
+        1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
+      )
+      if (heat > 0) {
+        // A tighter, faster crest for live traffic.
+        const livePhase = ((state.time / (SIGNAL_CYCLE * 0.45)) + (seed % 1000) / 1000) % 1
+        drawSignalWave(t => polylinePoint(pts, t), color, gain, livePhase, segments, 1, LIVE_INTENSITY * heat)
+      }
     })
+    ctx.restore()
+  }
+
+  /**
+   * Interstellar medium between clusters.
+   *
+   * Without this, each nebula reads as an isolated floating island. We lay a
+   * few very large, very faint gas blobs along each relation (and between
+   * spatially close clouds), so neighbouring clusters dissolve into one
+   * another and the whole field shares one continuous haze. Draw these FIRST,
+   * underneath everything, at a fraction of the cloud alpha.
+   */
+  function buildBridges() {
+    const bridges = []
+    const seen = new Set()
+    const consider = (a, b, strength) => {
+      const key = a.session.id < b.session.id
+        ? `${a.session.id}|${b.session.id}` : `${b.session.id}|${a.session.id}`
+      if (seen.has(key)) return
+      seen.add(key)
+      const dist = Math.hypot(
+        a.center[0] - b.center[0], a.center[1] - b.center[1], a.center[2] - b.center[2],
+      )
+      const rand = rng(hash(key))
+      const n = 3 + Math.round(strength * 3)
+      for (let k = 0; k < n; k += 1) {
+        const t = 0.2 + (k / Math.max(1, n - 1)) * 0.6
+        const base = [
+          a.center[0] + (b.center[0] - a.center[0]) * t,
+          a.center[1] + (b.center[1] - a.center[1]) * t,
+          a.center[2] + (b.center[2] - a.center[2]) * t,
+        ]
+        const drift = (rand() - 0.5) * dist * 0.18 * strength
+        bridges.push({
+          pos: [base[0] + drift, base[1] + (rand() - 0.5) * 26, base[2] - drift],
+          size: (60 + rand() * 70) * (0.6 + strength * 0.6),
+          color: k % 2 === 0 ? a.color : b.color,
+          alpha: 0.014 + rand() * 0.018,
+        })
+      }
+    }
+    for (const r of state.relations) if (r.a && r.b) consider(r.a, r.b, Math.max(0.3, r.weight))
+    // Spatially close clusters get a wisp even without a computed relation.
+    for (let i = 0; i < state.clusters.length; i += 1) {
+      for (let j = i + 1; j < state.clusters.length; j += 1) {
+        const a = state.clusters[i], b = state.clusters[j]
+        const d = Math.hypot(a.center[0]-b.center[0], a.center[1]-b.center[1], a.center[2]-b.center[2])
+        if (d < 190) consider(a, b, 0.35)
+      }
+    }
+    return bridges
+  }
+
+  function drawBridges(bridges) {
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    for (const b of bridges) {
+      const p = project(b.pos)
+      const d = b.size * p.scale
+      ctx.globalAlpha = b.alpha
+      ctx.drawImage(softSprite(b.color), p.x - d / 2, p.y - d / 2, d, d)
+    }
+    ctx.globalAlpha = 1
     ctx.restore()
   }
 
@@ -1059,12 +1188,14 @@
       const c0 = project(cluster.center)
 
       // A broad, axis-stretched soft body: pre-rendered sprite, no rim.
+      // Its size follows the session's real memory volume.
+      const sizeScale = cluster.scale || 1
       ctx.save()
       ctx.globalAlpha = 0.34 * alpha
       const bodySprite = softSprite(cluster.color)
-      const bw = 150 * c0.scale, bh = 78 * c0.scale
+      const bw = 150 * c0.scale * sizeScale, bh = 78 * c0.scale * sizeScale
       ctx.translate(c0.x, c0.y)
-      const ax = project(vadd(cluster.center, vscale(cloud.axis, 40)))
+      const ax = project(vadd(cluster.center, vscale(cloud.axis, 40 * sizeScale)))
       ctx.rotate(Math.atan2(ax.y - c0.y, ax.x - c0.x))
       ctx.drawImage(bodySprite, -bw / 2, -bh / 2, bw, bh)
       ctx.restore()
@@ -1168,9 +1299,10 @@
   function drawNeuronSkin() {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
+    const now = performance.now()
 
-    // Axons use the exact same signal wave as the nebula skin. No permanent
-    // sheath: between currents the wire is genuinely absent, not dimly drawn.
+    // Axons use the exact same signal wave as the nebula skin: dim static
+    // relation links, with a brighter realtime overlay on active clusters.
     for (const r of state.relations) {
       if (!r.a || !r.b) continue
       const active = matches(r.a) && matches(r.b)
@@ -1180,7 +1312,15 @@
       const seed = hash(r.source + r.target)
       const gain = (0.35 + r.weight * 0.65) * (state.isMobile ? Math.max(0, (r.weight - 0.3) * 1.4) : 1)
       if (gain < 0.05) continue
-      drawSignalWave(t => quadPoint(g, t), color, gain, signalPhase(seed), 48, 0.85)
+      drawSignalWave(t => quadPoint(g, t), color, gain, signalPhase(seed), 48, 0.85, RELATION_INTENSITY)
+      const heat = Math.max(
+        1 - (now - (r.a.lastLiveAt || 0)) / LIVE_WINDOW,
+        1 - (now - (r.b.lastLiveAt || 0)) / LIVE_WINDOW,
+      )
+      if (heat > 0) {
+        const livePhase = ((state.time / (SIGNAL_CYCLE * 0.45)) + (seed % 1000) / 1000) % 1
+        drawSignalWave(t => quadPoint(g, t), color, gain, livePhase, 48, 0.85, LIVE_INTENSITY * heat)
+      }
     }
 
     // Dendritic arbors: ONE path per depth across ALL neurons (4 strokes total
@@ -1203,8 +1343,8 @@
         ctx.moveTo(a.x, a.y)
         ctx.lineTo(b.x, b.y)
       }
-      ctx.strokeStyle = rgba(g.color, 0.26 * (1 - g.depth * 0.22))
-      ctx.lineWidth = Math.max(0.35, (2.3 * Math.pow(0.6, g.depth)) * scale * 0.5)
+      ctx.strokeStyle = rgba(g.color, 0.26 * Math.pow(0.82, g.depth))
+      ctx.lineWidth = Math.max(0.35, (2.3 * Math.pow(0.68, g.depth)) * scale * 0.5)
       ctx.lineCap = 'round'
       ctx.stroke()
     }
@@ -1234,7 +1374,7 @@
       if (!matches(cluster)) continue
       const p = project(cluster.center)
       const pulse = 0.9 + Math.sin(state.time * 0.0016 + hash(cluster.session.id) % 7) * 0.1
-      const R = (7 + Math.min(6, Math.log10(1 + cluster.session.counts.events) * 3)) * p.scale * pulse
+      const R = (7 + Math.min(6, Math.log10(1 + cluster.session.counts.events) * 3)) * p.scale * pulse * (cluster.scale || 1)
       const halo = softSprite(cluster.color)
       const hd = R * 6
       ctx.globalAlpha = 0.55
@@ -1436,6 +1576,7 @@
     if (state.skin === 'neuron') {
       drawNeuronSkin()
     } else {
+      drawBridges(state.bridges)
       drawNebulaClouds()
       drawRelationArcs()
       drawNebulaStars(projected)
