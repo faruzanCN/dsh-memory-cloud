@@ -105,15 +105,13 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     return sprite
   }
 
-  // A cached turbulent surface: generated once per skin, never per frame.
-  // Idle keeps this layer stationary so the dust lanes and plasma veins remain
-  // legible; only the surrounding halo breathes or changes with agent state.
+  // Cache the dark singularity's turbulent violet event horizon per skin.
   const nucleusTextures = new Map()
   function nucleusTexture(neural) {
     const key = neural ? 'neural' : 'stellar'
     if (nucleusTextures.has(key)) return nucleusTextures.get(key)
     const cv = document.createElement('canvas')
-    const n = 192
+    const n = 256
     cv.width = cv.height = n
     const c = cv.getContext('2d')
     const image = c.createImageData(n, n)
@@ -134,26 +132,61 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const px = (x + 0.5 - n / 2) / (n / 2)
       const py = (y + 0.5 - n / 2) / (n / 2)
       const r = Math.hypot(px, py)
-      const coarse = noise(px * 4 + 17, py * 4 + 23)
-      const granules = noise(px * 35 + 31, py * 35 + 7)
-      const fine = noise(px * 70 + 5, py * 70 + 41)
-      const discRadius = 0.82
-      const normalized = r / discRadius
-      const limb = Math.sqrt(Math.max(0, 1 - normalized * normalized))
-      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.80) / 0.035)))
-      // Fine solar granulation; smooth limb darkening defines a star, not a
-      // lumpy pink rock. A few low-contrast cool regions hint at sunspots.
-      const spots = smooth(Math.max(0, Math.min(1, (coarse - 0.65) / 0.2)))
-      const heat = Math.max(0, Math.min(1, (0.65 + granules * 0.24 + fine * 0.11 - spots * 0.28) * (0.56 + limb * 0.44)))
+      const angle = Math.atan2(py, px)
+      const turbulence = noise(px * 9 + 17, py * 9 + 23)
+      const grain = noise(px * 42 + 31, py * 42 + 7)
+      const rim = Math.exp(-(((r - 0.79) / 0.055) ** 2))
+      const filaments = (0.55 + 0.45 * Math.sin(angle * 7 + turbulence * 8 + r * 24))
+      const energy = rim * (0.38 + filaments * 0.42 + grain * 0.2)
+      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.86) / 0.09)))
       const i = (y * n + x) * 4
-      image.data[i] = Math.round(200 + heat * 55)
-      image.data[i + 1] = Math.round(65 + heat * 155)
-      image.data[i + 2] = Math.round(8 + heat * 70)
+      image.data[i] = Math.round(3 + energy * 165)
+      image.data[i + 1] = Math.round(2 + energy * 85)
+      image.data[i + 2] = Math.round(10 + energy * 245)
       image.data[i + 3] = Math.round(edge * 255)
     }
     c.putImageData(image, 0, 0)
     nucleusTextures.set(key, cv)
     return cv
+  }
+
+  // Split the accretion disc into rear/front halves so it crosses the void.
+  // Fixed seeds and continuous clock phases avoid per-frame random flicker.
+  function drawDarkStarDisc(radius, time, activity, front) {
+    ctx.save()
+    ctx.rotate(-0.36)
+    ctx.scale(1, 0.36)
+    const start = front ? 0 : Math.PI
+    const end = start + Math.PI
+    ctx.lineCap = 'round'
+    for (let lane = 0; lane < 7; lane += 1) {
+      const r = radius * (1.28 + lane * 0.115)
+      const phase = time * (0.000055 + lane * 0.000006)
+      ctx.beginPath()
+      const steps = state.isMobile ? 32 : 56
+      for (let j = 0; j <= steps; j += 1) {
+        const a = start + (end - start) * j / steps
+        const warp = 1 + Math.sin(a * 3 + phase + lane) * 0.035
+        const x = Math.cos(a) * r * warp, y = Math.sin(a) * r * warp
+        if (!j) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+      }
+      ctx.strokeStyle = rgba(lane < 2 ? [207, 155, 255] : [112, 53, 220], (front ? 0.29 : 0.16) + activity * 0.12)
+      ctx.lineWidth = radius * (lane < 2 ? 0.032 : 0.065)
+      ctx.stroke()
+      // Incomplete gold-violet streaks orbit through the larger disc.
+      for (let arc = 0; arc < 3; arc += 1) {
+        const head = ((phase + arc * 2.094 + lane * 0.63) % (Math.PI * 2))
+        const a = Math.max(start, head), b = Math.min(end, head + 0.38 + lane * 0.035)
+        if (b <= a) continue
+        ctx.beginPath()
+        ctx.arc(0, 0, r, a, b)
+        ctx.strokeStyle = rgba(lane % 3 === 0 ? [241, 191, 117] : [195, 131, 255], 0.5 + activity * 0.22)
+        ctx.lineWidth = radius * 0.018
+        ctx.stroke()
+      }
+    }
+    ctx.restore()
   }
 
   // One shared signal rhythm for BOTH skins: a slow, CONTINUOUS current.
@@ -877,29 +910,63 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     const activity = waiting ? 0.35 : conversing ? 0.65 : Math.max(input, output) * 0.3
     const breath = 1 + Math.sin(now * (waiting ? 0.0022 : 0.0011)) * (waiting ? 0.065 : 0.035)
     const size = (state.skin === 'neuron' ? 102 : 138) * zoom * breath
-    const tint = waiting ? [255, 135, 40] : conversing ? [255, 215, 110] : [255, 175, 65]
+    const tint = waiting ? [191, 101, 255] : conversing ? [220, 168, 255] : [133, 70, 235]
     const halo = softSprite(tint)
-    if (waiting || conversing) {
-      ctx.save()
-      ctx.translate(p.x, p.y)
-      ctx.rotate(now * (waiting ? 0.00018 : 0.00009))
-      ctx.globalAlpha = waiting ? 0.17 : 0.12
-      ctx.drawImage(halo, -size * 1.2, -size * 0.22, size * 2.4, size * 0.44)
-      ctx.rotate(1.4)
-      ctx.drawImage(halo, -size, -size * 0.2, size * 2, size * 0.4)
-      ctx.restore()
+    const radius = (state.skin === 'neuron' ? 35 : 44) * zoom
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.globalAlpha = 0.24 + activity * 0.16
+    ctx.drawImage(halo, -size * 1.05, -size * 0.9, size * 2.1, size * 1.8)
+    ctx.globalAlpha = 0.22 + activity * 0.15
+    ctx.drawImage(softSprite([90, 48, 205]), -size * 0.8, -size * 0.36, size * 1.6, size * 0.72)
+    ctx.globalAlpha = 1
+
+    // Wisps spiral inward, fading at both ends before they reach the horizon.
+    const dustCount = state.isMobile ? 20 : 36
+    for (let i = 0; i < dustCount; i += 1) {
+      const progress = (i / dustCount + now * 0.000022) % 1
+      const orbit = radius * (2.8 - progress * 1.65)
+      const a = i * 2.39996 + progress * 2.7
+      const x = Math.cos(a) * orbit
+      const y = Math.sin(a) * orbit * 0.66
+      const alpha = Math.sin(progress * Math.PI) * (0.28 + activity * 0.14)
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x - Math.sin(a) * radius * 0.09, y + Math.cos(a) * radius * 0.055)
+      ctx.strokeStyle = rgba(i % 5 === 0 ? [232, 185, 117] : [164, 107, 250], alpha)
+      ctx.lineWidth = Math.max(0.65, zoom * 0.85)
+      ctx.stroke()
     }
-    ctx.globalAlpha = 0.15 + activity * 0.22
-    ctx.drawImage(halo, p.x - size, p.y - size * 0.65, size * 2, size * 1.3)
-    ctx.globalAlpha = 0.38 + activity * 0.22
-    ctx.drawImage(halo, p.x - size * 0.36, p.y - size * 0.36, size * 0.72, size * 0.72)
-    // The material stays fixed while idle. Do not add a white-hot dot over
-    // the surface: that would wash all of the texture out again.
+    drawDarkStarDisc(radius, now, activity, false)
+
+    // The opaque void masks the rear disc. Its bright rim is textured, not a
+    // white point; the foreground disc is then allowed to cross the silhouette.
     ctx.save()
     ctx.globalCompositeOperation = 'source-over'
-    ctx.globalAlpha = 0.92
-    const surfaceSize = (state.skin === 'neuron' ? 102 : 128) * zoom
-    ctx.drawImage(nucleusTexture(state.skin === 'neuron'), p.x - surfaceSize / 2, p.y - surfaceSize / 2, surfaceSize, surfaceSize)
+    const surfaceSize = radius * 2 / 0.79
+    ctx.drawImage(nucleusTexture(state.skin === 'neuron'), -surfaceSize / 2, -surfaceSize / 2, surfaceSize, surfaceSize)
+    ctx.restore()
+
+    // Broken, angular celestial fragments give the corona its dark-star shape.
+    ctx.save()
+    ctx.rotate(now * 0.000035)
+    for (let i = 0; i < 9; i += 1) {
+      const a = i * Math.PI * 2 / 9 + 0.16
+      const r = radius * (1.15 + (i % 3) * 0.09)
+      const tip = r + radius * (i % 3 === 0 ? 0.43 : 0.2)
+      ctx.beginPath()
+      ctx.moveTo(Math.cos(a - 0.11) * r, Math.sin(a - 0.11) * r)
+      ctx.lineTo(Math.cos(a + 0.025) * tip, Math.sin(a + 0.025) * tip)
+      ctx.lineTo(Math.cos(a + 0.085) * r, Math.sin(a + 0.085) * r)
+      ctx.closePath()
+      ctx.fillStyle = 'rgba(28,14,49,0.88)'
+      ctx.fill()
+      ctx.strokeStyle = rgba(i % 3 === 0 ? [220, 172, 100] : [151, 91, 229], 0.52 + activity * 0.18)
+      ctx.lineWidth = Math.max(0.6, zoom * 0.8)
+      ctx.stroke()
+    }
+    ctx.restore()
+    drawDarkStarDisc(radius, now, activity, true)
     ctx.restore()
     if (state.skin === 'neuron') {
       // Dendrites around the global neural hub, joined without an outlined soma.
@@ -1854,7 +1921,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const safeRight = state.w - (state.isMobile ? 8 : 18)
 
       const nucleusCenter = project([0, 0, 0])
-      const nucleusRadius = (state.skin === 'neuron' ? 48 : 58) * Math.min(1.8, Math.max(0.65, nucleusCenter.scale))
+      const nucleusRadius = (state.skin === 'neuron' ? 74 : 92) * Math.min(1.8, Math.max(0.65, nucleusCenter.scale))
       const placed = [{ x: nucleusCenter.x - nucleusRadius, y: nucleusCenter.y - nucleusRadius, w: nucleusRadius * 2, h: nucleusRadius * 2 }]
       // Prioritise larger memories and nearer clusters, then place greedily.
       const candidates = state.clusters
