@@ -26,7 +26,7 @@ import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createZstdDecompress, zstdDecompressSync } from 'node:zlib'
 
-export const inject = ['webServer']
+export const inject = ['webServer', 'connection']
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 const LOG_PATTERN = /^session(?:\.[\w-]+)*\.jsonl\.zstd$/
@@ -789,12 +789,15 @@ class LiveHub {
     this.lastSent = new Map()
   }
 
-  add(res) {
-    const client = { res, alive: true }
+  add(res, authorize) {
+    const client = { res, authorize, alive: true }
     this.clients.add(client)
     if (this.clients.size === 1) {
       this.heartbeat = setInterval(() => {
-        for (const c of this.clients) if (c.alive) c.res.write(': ping\n\n')
+        for (const c of this.clients) {
+          if (!this.authorized(c)) continue
+          try { c.res.write(': ping\n\n') } catch { this.remove(c) }
+        }
       }, 15000)
     }
     res.write(`event: hello\ndata: ${JSON.stringify({ clients: this.clients.size })}\n\n`)
@@ -803,6 +806,16 @@ class LiveHub {
     res.on('close', close)
     res.on('error', close)
     return () => this.remove(client)
+  }
+
+  authorized(client) {
+    if (!client.alive) return false
+    try {
+      if (client.authorize()) return true
+    } catch { /* Authentication errors close the stream, never release data. */ }
+    this.remove(client)
+    try { client.res.end() } catch { /* Already disconnected. */ }
+    return false
   }
 
   remove(client) {
@@ -829,7 +842,7 @@ class LiveHub {
     if (this.recent.length > 24) this.recent.shift()
     const line = `data: ${JSON.stringify(item)}\n\n`
     for (const c of this.clients) {
-      if (!c.alive) continue
+      if (!this.authorized(c)) continue
       try { c.res.write(line) } catch { this.remove(c) }
     }
   }
@@ -953,24 +966,44 @@ export function apply(ctx, config) {
   })
   ctx.effect(() => () => { streams.clear(); live.dispose() }, 'memory-cloud: live hub')
 
-  const trustedHosts = new Set([
-    'localhost',
-    '127.0.0.1',
-    '::1',
-    '[::1]',
-    ...[...(config?.trustedHosts ?? [])].map(host => String(host).trim().toLowerCase()).filter(Boolean),
-  ])
-  const hostAllowed = req => {
-    const raw = typeof req.headers.host === 'string' ? req.headers.host : ''
-    const hostname = raw.replace(/:\d+$/, '').toLowerCase()
-    return trustedHosts.has(hostname)
+  // Legacy plugin-level trustedHosts is intentionally no longer an access grant.
+  // Connection owns the deployment's Host/Origin policy and signed credentials.
+  if (config?.trustedHosts?.length) {
+    ctx.logger.warn('memory-cloud: trustedHosts is deprecated; configure trusted hosts in DSH. All routes now require DSH owner authentication.')
   }
 
   const handler = async (req, res) => {
     try {
-      if (!hostAllowed(req)) return sendJson(res, 403, { error: 'Untrusted Host' })
+      const connection = ctx.connection
+      if (typeof connection?.admit !== 'function') {
+        return sendJson(res, 503, { error: 'DSH authentication is unavailable; update DSH before using Memory Nebula' })
+      }
+      // This is the same admission used by DSH's own HTTP APIs: Host/Origin
+      // fence plus a valid signed browser/API credential. Never trust cookies
+      // merely because they exist, or exempt loopback/proxied requests.
+      const admission = connection.admit(req)
+      if (admission?.rejection === 401) {
+        return sendJson(res, 401, { error: 'DSH authentication required; open DSH using its authenticated launch URL first' })
+      }
+      if (admission?.rejection === 403) {
+        return sendJson(res, 403, { error: 'Request rejected by DSH Host/Origin policy' })
+      }
+      if (!admission?.peer) {
+        return sendJson(res, 503, { error: 'DSH authentication is unavailable' })
+      }
+      // Like Connection's unrestricted Fetch routes, all-session memories are
+      // owner-only. A shared/session-scoped Peer must never see other sessions.
+      if (admission.peer.principal?.kind !== 'owner') {
+        return sendJson(res, 403, { error: 'DSH owner access required' })
+      }
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'Method not allowed' })
       const path = new URL(req.url ?? '/', 'http://dsh.local').pathname
+
+      if (path === '/memory-cloud') {
+        res.writeHead(302, { location: '/memory-cloud/', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
 
       if (path === '/memory-cloud/api/live') {
         res.writeHead(200, {
@@ -979,8 +1012,12 @@ export function apply(ctx, config) {
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
         })
+        if (req.method === 'HEAD') { res.end(); return }
         res.write(': connected\n\n')
-        const release = live.add(res)
+        const release = live.add(res, () => {
+          const admission = ctx.connection?.admit(req)
+          return admission?.rejection === undefined && admission?.peer?.principal?.kind === 'owner'
+        })
         req.on('close', release)
         req.on('error', release)
         return
@@ -1015,10 +1052,7 @@ export function apply(ctx, config) {
   }
 
   ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: '/memory-cloud', handler: (_req, res) => {
-      res.writeHead(302, { location: '/memory-cloud/' })
-      res.end()
-    } }),
+    () => ctx.webServer.register({ kind: 'exact', path: '/memory-cloud', handler }),
     'memory-cloud: redirect',
   )
   ctx.effect(

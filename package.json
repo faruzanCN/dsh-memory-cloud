@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-cloud",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "type": "module",
   "description": "Visualize every DSH session memory as an interactive 3D nebula, with a neuron-signal skin and zoom-driven detail levels.",
   "license": "MIT",

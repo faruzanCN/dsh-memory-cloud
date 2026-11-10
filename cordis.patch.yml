@@ -8,5 +8,5 @@
         maxSessions: 400
         maxFragments: 28
         maxFragmentChars: 220
-        # Extra authorities the Host-header check accepts (host or host:port).
-        trustedHosts: []
+        # All /memory-cloud routes require DSH owner authentication.
+        # Host/Origin trust is managed by DSH's connection service, not this plugin.
