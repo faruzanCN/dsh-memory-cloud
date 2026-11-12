@@ -1,9 +1,12 @@
 /**
  * Client half of the Memory Nebula bundle.
  *
- * Two additive slot registrations share one tiny observable store:
+ * Three additive slot registrations share one tiny observable store:
  *   - `sidebar.footer.action`: a button beside Settings that opens the nebula.
- *   - `shell.overlay`: the full-frame layer that hosts the nebula iframe.
+ *   - `shell.overlay`: the full-frame layer that hosts the nebula iframe. It is
+ *     only used as a fallback when the host has no right sidebar subsystem.
+ *   - `sidebar.right.pane.tab`: the nebula as a docked right-sidebar tab, so it
+ *     can stay open next to the conversation instead of covering it.
  *
  * The iframe loads a same-origin page served by the Host half. The nebula is
  * dark-only by design, so this half only bridges open/close and Escape — it
@@ -79,7 +82,7 @@ window.__ModuleLoader__.load({
       const t = useT()
       return h('button', {
         type: 'button',
-        onClick: () => store.set(!active),
+        onClick: () => openNebula(),
         title: t('hint'),
         'aria-label': t('title'),
         'aria-pressed': active,
@@ -98,7 +101,31 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // --- full-frame overlay ------------------------------------------------
+    // --- right-sidebar tab body -------------------------------------------
+    function NebulaPaneBody() {
+      return h('div', {
+        style: { width: '100%', height: '100%', minHeight: 0, background: '#070a1c' },
+      },
+        h('iframe', {
+          id: 'dsh-memory-cloud-pane-frame',
+          title: '记忆星云 · Memory nebula',
+          src: '/memory-cloud/',
+          style: { display: 'block', width: '100%', height: '100%', border: 0 },
+        }),
+      )
+    }
+
+    // Open the nebula as a docked right-sidebar tab when the host provides the
+    // right sidebar subsystem; otherwise fall back to the full-frame overlay.
+    let openRightTab = null
+    const openNebula = () => {
+      if (openRightTab) {
+        try { openRightTab(); return } catch (_) { openRightTab = null }
+      }
+      store.set(!store.getSnapshot())
+    }
+
+    // --- full-frame overlay (fallback when no right sidebar) --------------
     function NebulaOverlay() {
       const isOpen = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot)
 
@@ -159,6 +186,26 @@ window.__ModuleLoader__.load({
           order: 100,
           label,
         }, NebulaOverlay)))
+        // Optional dependency: hosts without the right sidebar subsystem simply
+        // never run this callback and keep using the overlay.
+        try {
+          if (typeof ctx.inject === 'function') {
+            ctx.inject(['sidebarRightTabs', 'sidebarRight'], (rightCtx) => {
+              try {
+                disposers.push(rightCtx.effect(() => rightCtx.sidebarRightTabs.register({
+                  id: 'dsh-memory-cloud',
+                  kind: 'memory-cloud',
+                  title: () => '记忆星云',
+                }), 'memory-cloud: right tab type'))
+                disposers.push(rightCtx.slots.inject('sidebar.right.pane.tab', () => rightCtx.slots.register({
+                  name: 'sidebar.right.pane.tab',
+                  key: 'dsh-memory-cloud',
+                }, NebulaPaneBody)))
+                openRightTab = () => { rightCtx.sidebarRight.openTab('memory-cloud') }
+              } catch (_) { openRightTab = null }
+            })
+          }
+        } catch (_) { openRightTab = null }
         ctx.effect(() => () => {
           for (const dispose of disposers) { try { dispose() } catch (_) {} }
           localeApi = null
