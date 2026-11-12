@@ -25,6 +25,7 @@ import { readFile, readdir, stat, mkdir, writeFile, rename } from 'node:fs/promi
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createZstdDecompress, zstdDecompressSync } from 'node:zlib'
+import { NucleusAgent } from './nucleus-agent.js'
 
 export const inject = ['webServer', 'connection']
 
@@ -787,6 +788,7 @@ class LiveHub {
     this.seq = 0
     this.heartbeat = null
     this.lastSent = new Map()
+    this.agent = new NucleusAgent()
   }
 
   add(res, authorize) {
@@ -800,7 +802,10 @@ class LiveHub {
         }
       }, 15000)
     }
-    res.write(`event: hello\ndata: ${JSON.stringify({ clients: this.clients.size })}\n\n`)
+    res.write(`event: hello\ndata: ${JSON.stringify({
+      clients: this.clients.size,
+      activity: this.agent.activeSessionsSnapshot(performance.now()),
+    })}\n\n`)
     for (const item of this.recent) res.write(`data: ${JSON.stringify({ ...item, replay: true })}\n\n`)
     const close = () => this.remove(client)
     res.on('close', close)
@@ -830,6 +835,7 @@ class LiveHub {
   publish(item) {
     const key = `${item.sessionId}:${item.kind}:${item.type}:${item.tool || ''}`
     const now = Date.now()
+    this.agent.accept(item, performance.now(), now)
     const noisy = item.type === 'tool/call' || item.type === 'tool/result'
     if (noisy) {
       const last = this.lastSent.get(key) || 0
@@ -1040,6 +1046,9 @@ export function apply(ctx, config) {
       }
       if (path === '/memory-cloud/nucleus-agent.js') {
         return sendFile(res, 'text/javascript; charset=utf-8', await readAsset('nucleus-agent.js'))
+      }
+      if (path === '/memory-cloud/black-hole.js') {
+        return sendFile(res, 'text/javascript; charset=utf-8', await readAsset('black-hole.js'))
       }
       if (path === '/memory-cloud/nebula.js') {
         return sendFile(res, 'text/javascript; charset=utf-8', await readAsset('nebula.js'))

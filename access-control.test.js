@@ -17,6 +17,7 @@ async function harness(t, config = {}) {
   await mkdir(sessionsDir)
   const routes = [], dispose = [], events = new EventEmitter(), seen = [], warnings = []
   const state = { revoked: false, broken: false }
+  let sourceSeq = 0
   const connection = {
     admit(req) {
       seen.push(req)
@@ -66,14 +67,16 @@ async function harness(t, config = {}) {
       request.end()
     }),
     owner: { cookie: 'dsh-fixture=owner' },
-    publish: text => events.emit('session/event', { id: 'fixture-session', title: 'Fixture' },
-      { type: 'user/message', time: Date.now(), data: { content: text } }),
+    publish: (text, sessionId = 'fixture-session', type = 'user/message') =>
+      events.emit('session/event', { id: sessionId, title: 'Fixture' },
+        { type, seq: ++sourceSeq, time: Date.now(), data: { content: text } }),
   }
 }
 
 const paths = [
   '/memory-cloud', '/memory-cloud/', '/memory-cloud/index.html',
   '/memory-cloud/nebula.js', '/memory-cloud/nucleus-agent.js', '/memory-cloud/nebula.css',
+  '/memory-cloud/black-hole.js',
   '/memory-cloud/api/memories', '/memory-cloud/api/session/fixture-session',
   '/memory-cloud/api/live', '/memory-cloud/unknown',
 ]
@@ -124,7 +127,7 @@ test('authenticated owners can load the complete page and data API', async t => 
   const redirect = await h.request('/memory-cloud', { headers: h.owner })
   assert.equal(redirect.status, 302)
   assert.equal(redirect.headers.get('location'), '/memory-cloud/')
-  for (const path of paths.slice(1, 6)) {
+  for (const path of paths.slice(1, 7)) {
     const response = await h.request(path, { headers: h.owner })
     assert.equal(response.status, 200, path)
     assert.ok((await response.text()).length > 0)
@@ -153,6 +156,44 @@ test('missing or failing DSH authentication never falls back to public access', 
   const failure = await h.request('/memory-cloud/api/memories', { headers: h.owner })
   assert.equal(failure.status, 500)
   assert.ok(!(await failure.text()).includes('private authentication error'))
+})
+
+test('SSE hello reports current conversations even when opened or reconnected mid-turn', async t => {
+  const h = await harness(t)
+  h.publish('start', 'a')
+  h.publish('', 'a', 'tool/call')
+  h.publish('start', 'b')
+  h.publish('', 'b', 'request/header')
+  h.publish('finished', 'c')
+  h.publish('', 'c', 'turn/end')
+  const readSnapshot = async () => {
+    const controller = new AbortController()
+    try {
+      const response = await h.request('/memory-cloud/api/live', {
+        headers: h.owner, signal: controller.signal,
+      })
+      assert.equal(response.status, 200)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let text = ''
+      while (!text.includes('\n\n')) {
+        const chunk = await reader.read()
+        assert.equal(chunk.done, false)
+        text += decoder.decode(chunk.value, { stream: true })
+      }
+      const hello = /event: hello\ndata: ([^\n]+)/.exec(text)
+      assert.ok(hello)
+      return JSON.parse(hello[1]).activity
+    } finally { controller.abort() }
+  }
+  assert.deepEqual(await readSnapshot(), [
+    { sessionId: 'a', mode: 'conversing' },
+    { sessionId: 'b', mode: 'waiting' },
+  ])
+  h.publish('', 'a', 'turn/end')
+  assert.deepEqual(await readSnapshot(), [{ sessionId: 'b', mode: 'waiting' }])
+  h.publish('', 'b', 'turn/end')
+  assert.deepEqual(await readSnapshot(), [])
 })
 
 test('SSE owner receives replay and new data; expired credentials stop further delivery', async t => {

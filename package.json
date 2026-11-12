@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-cloud",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "type": "module",
   "description": "Visualize every DSH session memory as an interactive 3D nebula, with a neuron-signal skin and zoom-driven detail levels.",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "./nebula.html": "./nebula.html",
     "./nebula.css": "./nebula.css",
     "./nebula.js": "./nebula.js",
+    "./black-hole.js": "./black-hole.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
@@ -44,6 +45,7 @@
     "nebula.html",
     "nebula.css",
     "nebula.js",
+    "black-hole.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

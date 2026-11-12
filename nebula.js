@@ -1,4 +1,5 @@
-import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
+import { NucleusAgent, NucleusOrbit, passageLight, TRANSIT_MS } from './nucleus-agent.js'
+import { BlackHoleRenderer } from './black-hole.js'
 /* Memory Nebula — 3D star-field renderer, no external dependencies.
  * Each DSH Session is a nebula cluster; each conversation fragment is a star
  * orbiting its cluster in 3D. Pure Canvas 2D with a hand-rolled perspective
@@ -8,6 +9,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
 
   const canvas = document.getElementById('sky')
   const ctx = canvas.getContext('2d', { alpha: false })
+  const blackHole = new BlackHoleRenderer()
   const el = {
     subtitle: document.getElementById('subtitle'),
     search: document.getElementById('search'),
@@ -103,90 +105,6 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     sprite = cv
     spriteCache.set(key, sprite)
     return sprite
-  }
-
-  // Cache the dark singularity's turbulent violet event horizon per skin.
-  const nucleusTextures = new Map()
-  function nucleusTexture(neural) {
-    const key = neural ? 'neural' : 'stellar'
-    if (nucleusTextures.has(key)) return nucleusTextures.get(key)
-    const cv = document.createElement('canvas')
-    const n = 256
-    cv.width = cv.height = n
-    const c = cv.getContext('2d')
-    const image = c.createImageData(n, n)
-    const smooth = t => t * t * (3 - 2 * t)
-    const lattice = (x, y) => {
-      let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ 0x4a91
-      h = Math.imul(h ^ (h >>> 13), 1274126177)
-      return ((h ^ (h >>> 16)) >>> 0) / 4294967295
-    }
-    const noise = (x, y) => {
-      const ix = Math.floor(x), iy = Math.floor(y)
-      const u = smooth(x - ix), v = smooth(y - iy)
-      const a = lattice(ix, iy) * (1 - u) + lattice(ix + 1, iy) * u
-      const b = lattice(ix, iy + 1) * (1 - u) + lattice(ix + 1, iy + 1) * u
-      return a * (1 - v) + b * v
-    }
-    for (let y = 0; y < n; y += 1) for (let x = 0; x < n; x += 1) {
-      const px = (x + 0.5 - n / 2) / (n / 2)
-      const py = (y + 0.5 - n / 2) / (n / 2)
-      const r = Math.hypot(px, py)
-      const angle = Math.atan2(py, px)
-      const turbulence = noise(px * 9 + 17, py * 9 + 23)
-      const grain = noise(px * 42 + 31, py * 42 + 7)
-      const rim = Math.exp(-(((r - 0.79) / 0.055) ** 2))
-      const filaments = (0.55 + 0.45 * Math.sin(angle * 7 + turbulence * 8 + r * 24))
-      const energy = rim * (0.38 + filaments * 0.42 + grain * 0.2)
-      const edge = 1 - smooth(Math.max(0, Math.min(1, (r - 0.86) / 0.09)))
-      const i = (y * n + x) * 4
-      image.data[i] = Math.round(3 + energy * 165)
-      image.data[i + 1] = Math.round(2 + energy * 85)
-      image.data[i + 2] = Math.round(10 + energy * 245)
-      image.data[i + 3] = Math.round(edge * 255)
-    }
-    c.putImageData(image, 0, 0)
-    nucleusTextures.set(key, cv)
-    return cv
-  }
-
-  // Split the accretion disc into rear/front halves so it crosses the void.
-  // Fixed seeds and continuous clock phases avoid per-frame random flicker.
-  function drawDarkStarDisc(radius, time, activity, front) {
-    ctx.save()
-    ctx.rotate(-0.36)
-    ctx.scale(1, 0.36)
-    const start = front ? 0 : Math.PI
-    const end = start + Math.PI
-    ctx.lineCap = 'round'
-    for (let lane = 0; lane < 7; lane += 1) {
-      const r = radius * (1.28 + lane * 0.115)
-      const phase = time * (0.000055 + lane * 0.000006)
-      ctx.beginPath()
-      const steps = state.isMobile ? 32 : 56
-      for (let j = 0; j <= steps; j += 1) {
-        const a = start + (end - start) * j / steps
-        const warp = 1 + Math.sin(a * 3 + phase + lane) * 0.035
-        const x = Math.cos(a) * r * warp, y = Math.sin(a) * r * warp
-        if (!j) ctx.moveTo(x, y)
-        else ctx.lineTo(x, y)
-      }
-      ctx.strokeStyle = rgba(lane < 2 ? [207, 155, 255] : [112, 53, 220], (front ? 0.29 : 0.16) + activity * 0.12)
-      ctx.lineWidth = radius * (lane < 2 ? 0.032 : 0.065)
-      ctx.stroke()
-      // Incomplete gold-violet streaks orbit through the larger disc.
-      for (let arc = 0; arc < 3; arc += 1) {
-        const head = ((phase + arc * 2.094 + lane * 0.63) % (Math.PI * 2))
-        const a = Math.max(start, head), b = Math.min(end, head + 0.38 + lane * 0.035)
-        if (b <= a) continue
-        ctx.beginPath()
-        ctx.arc(0, 0, r, a, b)
-        ctx.strokeStyle = rgba(lane % 3 === 0 ? [241, 191, 117] : [195, 131, 255], 0.5 + activity * 0.22)
-        ctx.lineWidth = radius * 0.018
-        ctx.stroke()
-      }
-    }
-    ctx.restore()
   }
 
   // One shared signal rhythm for BOTH skins: a slow, CONTINUOUS current.
@@ -518,6 +436,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       times: [],      // timestamps for the events/minute readout
       lastBurst: 0,
       agent: new NucleusAgent(),
+      orbit: new NucleusOrbit(),
       nucleusTransfers: new Map(), // session+direction -> bounded real-event current
       liveClusters: new Map(), // sessions not on disk yet -> ephemeral nebula
     },
@@ -714,12 +633,21 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     if (typeof EventSource === 'undefined') return
     let source
     try { source = new EventSource('/memory-cloud/api/live') } catch { return }
+    source.addEventListener('hello', event => {
+      try {
+        const snapshot = JSON.parse(event.data)
+        if (Array.isArray(snapshot.activity)) {
+          state.live.agent.syncActiveSessions(snapshot.activity, performance.now())
+        }
+      } catch { /* A malformed snapshot must not invent active conversations. */ }
+    })
     source.onopen = () => {
       state.live.connected = true
       el.livePanel.dataset.connected = 'true'
     }
     source.onerror = () => {
       state.live.connected = false
+      state.live.agent.syncActiveSessions([], performance.now())
       el.livePanel.dataset.connected = 'false'
     }
     source.onmessage = event => {
@@ -903,89 +831,15 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
 
     const p = project([0, 0, 0])
     // Keep the nucleus modest at deep zoom; it must not mask readable memories.
-    const zoom = Math.min(1.8, Math.max(0.65, p.scale))
-    const mode = state.live.agent.mode(now)
-    const waiting = mode === 'waiting'
-    const conversing = mode === 'conversing'
-    const activity = waiting ? 0.35 : conversing ? 0.65 : Math.max(input, output) * 0.3
-    const breath = 1 + Math.sin(now * (waiting ? 0.0022 : 0.0011)) * (waiting ? 0.065 : 0.035)
-    const size = (state.skin === 'neuron' ? 102 : 138) * zoom * breath
-    const tint = waiting ? [191, 101, 255] : conversing ? [220, 168, 255] : [133, 70, 235]
-    const halo = softSprite(tint)
-    const radius = (state.skin === 'neuron' ? 35 : 44) * zoom
+    const zoom = Math.min(1.3, Math.max(0.65, p.scale))
+    const active = state.live.agent.activeCount()
+    const { phase } = state.live.orbit.update(now, active)
+    const activity = Math.min(1, active * 0.12 + Math.max(input, output) * 0.2)
+    const radius = (state.skin === 'neuron' ? 21 : 23) * zoom
     ctx.save()
     ctx.translate(p.x, p.y)
-    ctx.globalAlpha = 0.24 + activity * 0.16
-    ctx.drawImage(halo, -size * 1.05, -size * 0.9, size * 2.1, size * 1.8)
-    ctx.globalAlpha = 0.22 + activity * 0.15
-    ctx.drawImage(softSprite([90, 48, 205]), -size * 0.8, -size * 0.36, size * 1.6, size * 0.72)
-    ctx.globalAlpha = 1
-
-    // Wisps spiral inward, fading at both ends before they reach the horizon.
-    const dustCount = state.isMobile ? 20 : 36
-    for (let i = 0; i < dustCount; i += 1) {
-      const progress = (i / dustCount + now * 0.000022) % 1
-      const orbit = radius * (2.8 - progress * 1.65)
-      const a = i * 2.39996 + progress * 2.7
-      const x = Math.cos(a) * orbit
-      const y = Math.sin(a) * orbit * 0.66
-      const alpha = Math.sin(progress * Math.PI) * (0.28 + activity * 0.14)
-      ctx.beginPath()
-      ctx.moveTo(x, y)
-      ctx.lineTo(x - Math.sin(a) * radius * 0.09, y + Math.cos(a) * radius * 0.055)
-      ctx.strokeStyle = rgba(i % 5 === 0 ? [232, 185, 117] : [164, 107, 250], alpha)
-      ctx.lineWidth = Math.max(0.65, zoom * 0.85)
-      ctx.stroke()
-    }
-    drawDarkStarDisc(radius, now, activity, false)
-
-    // The opaque void masks the rear disc. Its bright rim is textured, not a
-    // white point; the foreground disc is then allowed to cross the silhouette.
-    ctx.save()
-    ctx.globalCompositeOperation = 'source-over'
-    const surfaceSize = radius * 2 / 0.79
-    ctx.drawImage(nucleusTexture(state.skin === 'neuron'), -surfaceSize / 2, -surfaceSize / 2, surfaceSize, surfaceSize)
+    blackHole.draw(ctx, radius, phase, activity, state.isMobile, now, state.skin)
     ctx.restore()
-
-    // Broken, angular celestial fragments give the corona its dark-star shape.
-    ctx.save()
-    ctx.rotate(now * 0.000035)
-    for (let i = 0; i < 9; i += 1) {
-      const a = i * Math.PI * 2 / 9 + 0.16
-      const r = radius * (1.15 + (i % 3) * 0.09)
-      const tip = r + radius * (i % 3 === 0 ? 0.43 : 0.2)
-      ctx.beginPath()
-      ctx.moveTo(Math.cos(a - 0.11) * r, Math.sin(a - 0.11) * r)
-      ctx.lineTo(Math.cos(a + 0.025) * tip, Math.sin(a + 0.025) * tip)
-      ctx.lineTo(Math.cos(a + 0.085) * r, Math.sin(a + 0.085) * r)
-      ctx.closePath()
-      ctx.fillStyle = 'rgba(28,14,49,0.88)'
-      ctx.fill()
-      ctx.strokeStyle = rgba(i % 3 === 0 ? [220, 172, 100] : [151, 91, 229], 0.52 + activity * 0.18)
-      ctx.lineWidth = Math.max(0.6, zoom * 0.8)
-      ctx.stroke()
-    }
-    ctx.restore()
-    drawDarkStarDisc(radius, now, activity, true)
-    ctx.restore()
-    if (state.skin === 'neuron') {
-      // Dendrites around the global neural hub, joined without an outlined soma.
-      ctx.beginPath()
-      for (let i = 0; i < 7; i += 1) {
-        const a = i * Math.PI * 2 / 7
-        const len = size * (0.52 + (i % 3) * 0.12)
-        const x = p.x + Math.cos(a) * len, y = p.y + Math.sin(a) * len
-        ctx.moveTo(p.x, p.y)
-        ctx.quadraticCurveTo(p.x + Math.cos(a + 0.3) * len * 0.6, p.y + Math.sin(a + 0.3) * len * 0.6, x, y)
-        for (const side of [-1, 1]) {
-          ctx.moveTo(x, y)
-          ctx.lineTo(x + Math.cos(a + side * 0.6) * len * 0.35, y + Math.sin(a + side * 0.6) * len * 0.35)
-        }
-      }
-      ctx.strokeStyle = rgba(tint, 0.24 + activity * 0.12)
-      ctx.lineWidth = 0.65
-      ctx.stroke()
-    }
     ctx.restore()
 
   }
@@ -997,17 +851,19 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
 
-    // A soft, lingering aura on any cloud touched in the last few seconds:
-    // the ring is brief, but the cluster itself keeps a "hot" edge so an
-    // active conversation is visible even between events.
+    // Active conversations breathe continuously, including long model waits.
+    // A completed conversation retains only the short event afterglow.
     for (const cluster of state.clusters) {
+      if (!matches(cluster)) continue
       const last = cluster.lastLiveAt || 0
-      const heat = Math.max(0, 1 - (now - last) / 3200)
+      const breath = L.agent.clusterActivity(cluster.session.id, now)
+      const recent = last > 0 ? Math.max(0, 1 - (now - last) / 3200) : 0
+      const heat = Math.max(recent, breath)
       if (heat <= 0) continue
       const pr = project(cluster.center)
       const sprite = softSprite(cluster.color)
-      const d = 130 * pr.scale * (0.8 + heat * 0.5)
-      ctx.globalAlpha = heat * 0.16
+      const d = 130 * pr.scale * (0.8 + heat * 0.3 + breath * 0.22)
+      ctx.globalAlpha = heat * 0.16 + breath * 0.1
       ctx.drawImage(sprite, pr.x - d / 2, pr.y - d / 2, d, d)
     }
     ctx.globalAlpha = 1
@@ -1495,6 +1351,13 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const visible = matches(cluster)
       const alpha = visible ? 1 : 0.08
       const cloud = cluster.cloud
+      const breath = visible ? state.live.agent.clusterActivity(cluster.session.id, state.time) : 0
+      const gain = 1 + breath * 0.6
+      const c0 = project(cluster.center)
+      ctx.save()
+      ctx.translate(c0.x, c0.y)
+      ctx.scale(1 + breath * 0.045, 1 + breath * 0.045)
+      ctx.translate(-c0.x, -c0.y)
 
       // Wispy filaments, all in ONE path (one stroke per cloud).
       ctx.beginPath()
@@ -1503,12 +1366,10 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
         ctx.moveTo(pa.x, pa.y)
         ctx.quadraticCurveTo(pb.x, pb.y, pc.x, pc.y)
       }
-      ctx.strokeStyle = rgba(cluster.color, 0.055 * alpha)
+      ctx.strokeStyle = rgba(cluster.color, 0.055 * alpha * gain)
       ctx.lineWidth = 2
       ctx.lineCap = 'round'
       ctx.stroke()
-
-      const c0 = project(cluster.center)
 
       // A broad, axis-stretched soft body: pre-rendered sprite, no rim.
       // Its size follows the session's real memory volume.
@@ -1517,7 +1378,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       // stays a nebula instead of an opaque patchwork quilt.
       const fog = Math.max(0.42, Math.min(1, 24 / Math.max(24, state.clusters.length)))
       ctx.save()
-      ctx.globalAlpha = 0.34 * alpha * fog
+      ctx.globalAlpha = Math.min(1, 0.34 * alpha * fog * gain)
       const bodySprite = softSprite(cluster.color)
       const bw = 150 * c0.scale * sizeScale, bh = 78 * c0.scale * sizeScale
       ctx.translate(c0.x, c0.y)
@@ -1536,12 +1397,13 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
         const w = Math.max(6, puff.r * p.scale * 3.4)
         const h = w * puff.squash
         ctx.save()
-        ctx.globalAlpha = (0.075 + puff.alpha * 1.1) * alpha * fog
+        ctx.globalAlpha = Math.min(1, (0.075 + puff.alpha * 1.1) * alpha * fog * gain)
         ctx.translate(p.x, p.y)
         ctx.rotate(puff.angle)
         ctx.drawImage(softSprite(tint), -w / 2, -h / 2, w, h)
         ctx.restore()
       }
+      ctx.restore()
       ctx.globalAlpha = 1
     }
     ctx.restore()
@@ -1684,17 +1546,18 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
     for (const cluster of state.clusters) {
       if (!matches(cluster)) continue
       const p = project(cluster.center)
+      const breath = state.live.agent.clusterActivity(cluster.session.id, state.time)
       const pulse = 0.9 + Math.sin(state.time * 0.0016 + hash(cluster.session.id) % 7) * 0.1
-      const R = (7 + Math.min(6, Math.log10(1 + cluster.session.counts.events) * 3)) * p.scale * pulse * (cluster.scale || 1)
+      const R = (7 + Math.min(6, Math.log10(1 + cluster.session.counts.events) * 3)) * p.scale * pulse * (cluster.scale || 1) * (1 + breath * 0.15)
       const halo = softSprite(cluster.color)
       const hd = R * 6
-      ctx.globalAlpha = 0.55
+      ctx.globalAlpha = 0.55 + breath * 0.25
       ctx.drawImage(halo, p.x - hd / 2, p.y - hd / 2, hd, hd)
       const bd = R * 2.6
-      ctx.globalAlpha = 0.5
+      ctx.globalAlpha = 0.5 + breath * 0.25
       ctx.drawImage(halo, p.x - bd / 2, p.y - bd / 2, bd, bd)
       const nd = Math.max(3, R * 1.1)
-      ctx.globalAlpha = 0.6
+      ctx.globalAlpha = 0.6 + breath * 0.25
       ctx.drawImage(whiteSprite, p.x - nd / 2, p.y - nd / 2, nd, nd)
       ctx.globalAlpha = 1
     }
@@ -1921,7 +1784,7 @@ import { NucleusAgent, passageLight, TRANSIT_MS } from './nucleus-agent.js'
       const safeRight = state.w - (state.isMobile ? 8 : 18)
 
       const nucleusCenter = project([0, 0, 0])
-      const nucleusRadius = (state.skin === 'neuron' ? 74 : 92) * Math.min(1.8, Math.max(0.65, nucleusCenter.scale))
+      const nucleusRadius = (state.skin === 'neuron' ? 68 : 84) * Math.min(1.3, Math.max(0.65, nucleusCenter.scale))
       const placed = [{ x: nucleusCenter.x - nucleusRadius, y: nucleusCenter.y - nucleusRadius, w: nucleusRadius * 2, h: nucleusRadius * 2 }]
       // Prioritise larger memories and nearer clusters, then place greedily.
       const candidates = state.clusters
